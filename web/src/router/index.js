@@ -8,12 +8,19 @@ import ProcessStepEditorView from '../views/task-card/ProcessStepEditorView.vue'
 const JobViewerView = () => import('../views/job/JobViewerView.vue');
 const ConfigMaintenanceView = () => import('../views/config/ConfigMaintenanceView.vue');
 
+export function requireTaskCardContext(to) {
+  const cardId = to.query?.cardId ?? to.query?.id;
+  return cardId === undefined || cardId === null || String(cardId).trim() === ''
+    ? { name: 'task-card-list' }
+    : true;
+}
+
 const routes = [
   { path: '/', redirect: '/task-card/list' },
   { path: '/identity', name: 'identity', component: IdentityView, meta: { public: true, title: '选择身份' } },
   { path: '/task-card/list', name: 'task-card-list', component: TaskCardListView, meta: { title: '工卡清单' } },
   { path: '/task-card/editor', name: 'task-card-editor', component: TaskCardEditorView, meta: { title: '工卡编制' } },
-  { path: '/task-card/step', name: 'task-card-step', component: ProcessStepEditorView, meta: { title: '工序编辑' } },
+  { path: '/task-card/step', name: 'task-card-step', component: ProcessStepEditorView, beforeEnter: requireTaskCardContext, meta: { title: '工序编辑' } },
   { path: '/job/:jobNo', name: 'job', component: JobViewerView, meta: { title: 'JOB 执行' } },
   { path: '/config', name: 'config', component: ConfigMaintenanceView, meta: { title: '系统配置' } },
   { path: '/:pathMatch(.*)*', redirect: '/task-card/list' },

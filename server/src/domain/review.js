@@ -3,11 +3,11 @@
  *
  * 本模块是一个**组合模块**：不重新实现任一子校验的判定逻辑，只按需求 34.1 的顺序编排既有
  * 领域纯函数并汇总结果。三项能力：
- * - `submitReviewChecklist(card, ctx)`  提交审核完整校验清单 (a)–(g)，返回未通过项清单
+ * - `submitReviewChecklist(card, ctx)`  提交审核完整校验清单 (a)–(h)，返回未通过项清单
  * - `canApprove(card, userId)`          一编一审：审核人 ≠ 编制人（不含权限判定，见下）
  * - `acceptReviewAction(card, action, comment)` 批准/驳回的接受条件（态=审核中 ∧ 意见非空）
  *
- * ## 校验清单 (a)–(g) 的组合来源（需求 34.1，任一未通过即阻止提交）
+ * ## 校验清单 (a)–(h) 的组合来源（需求 34.1，任一未通过即阻止提交）
  *
  * | 项 | 名称 | 组合自 | 数据来源（ctx） |
  * |----|------|--------|------------------|
@@ -18,6 +18,7 @@
  * | (e) | 变更原因 | 复用 `change-record.js` 的 `isBlank` 判空约定 | `ctx.changeReason` |
  * | (f) | 签署项配置 | `relation.js` 的 `requiredSignDocTypes` + `signature.js` 的 `aggregateSignatureRequirements` | `ctx.relations` / `ctx.signRuleCfg` / `ctx.steps` |
  * | (g) | Stage×工卡类型组合 | `stage-constraint.js` 的 `validateStageCardType(stage, cardType, cfg)` | `ctx.stageConstraintCfg` |
+ * | (h) | 商务分类确认 | 最新持久化分类结果须为唯一 `derived` 或人工 `confirmed` | `ctx.latestClassificationResult` |
  *
  * ⚠ 需求 34.3「审核中禁止编辑」**不在本模块校验范围内**：该约束是需求 49.1「仅新增态可编辑」
  * 的一个特例，已由 `card-rules.js` 的 `isEditable` / `isFrozen`（Property 26）覆盖，
@@ -50,6 +51,7 @@
  *   relations:            readonly object[], // (f) 本卡的关联单据集合（card_relation 行）
  *   signRuleCfg:          object|Map|array,  // (f) exec_doc_type 的签署要求配置（缺省回落种子常量）
  *   stageConstraintCfg:   object,            // (g) Stage×类型约束配置（stage_card_type_constraint + crosscut）
+ *   latestClassificationResult: object|null, // (h) 最新持久化商务分类派生/确认结果
  * }
  * ```
  *
@@ -99,7 +101,7 @@ const REVIEW_ACTION_MESSAGES = Object.freeze({
   [REVIEW_ACTION_REJECTION.COMMENT_REQUIRED]: '审核意见为空，须填写审核意见方可执行批准或驳回',
 });
 
-/** 提交审核校验清单的 7 项标识与中文名（需求 34.1 (a)–(g)） */
+/** 提交审核校验清单的 8 项标识与中文名（需求 34.1 (a)–(h)） */
 const CHECK_LABELS = Object.freeze({
   a: '查重',
   b: '枚举',
@@ -108,6 +110,7 @@ const CHECK_LABELS = Object.freeze({
   e: '变更原因',
   f: '签署项配置',
   g: 'Stage×工卡类型组合',
+  h: '商务分类确认',
 });
 
 /** 唯一可执行批准/驳回的状态（需求 34.10） */
@@ -181,7 +184,7 @@ function failed(check, rejection, message, detail) {
 }
 
 // =====================================================================
-// 校验项 (a)–(g)：每项返回 `null`（通过）或一条未通过记录
+// 校验项 (a)–(h)：每项返回 `null`（通过）或一条未通过记录
 // =====================================================================
 
 /** (a) 查重（需求 10.4、10.5、38.6）：组合 `card-rules.js` 的 `checkDuplicate`。 */
@@ -297,17 +300,39 @@ function checkStageCardTypeItem(card, ctx) {
   return null;
 }
 
+function checkClassificationItem(ctx) {
+  const latest = ctx?.latestClassificationResult ?? ctx?.classificationResult;
+  if (latest === null || latest === undefined || typeof latest !== 'object') {
+    return failed('h', 'CLASSIFICATION_RESULT_MISSING', '尚无持久化商务分类派生结果，不可提交审核');
+  }
+  const candidates = Array.isArray(latest.candidates) ? latest.candidates : [];
+  const confirmed = latest.status === 'confirmed'
+    && (latest.isManualConfirmed === 1 || latest.isManualConfirmed === true);
+  const unambiguousDerived = latest.status === 'derived'
+    && typeof latest.classification === 'string'
+    && candidates.length === 1;
+  if (!confirmed && !unambiguousDerived) {
+    return failed(
+      'h',
+      'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED',
+      '商务分类尚未唯一派生或人工确认，不可提交审核',
+      { resultId: latest.id ?? null, status: latest.status ?? null, candidates },
+    );
+  }
+  return null;
+}
+
 /**
  * 提交审核完整校验清单（需求 34.1、34.2，Property 19）——**组合模块**，依需求 34.1 的
- * (a)–(g) 顺序执行既有领域纯函数并汇总结果，不重新实现任一子校验的判定逻辑。
+ * (a)–(h) 顺序执行既有领域纯函数并汇总结果，不重新实现任一子校验的判定逻辑。
  *
- * 全部 7 项通过时 `ok === true`；任一未通过时 `ok === false`，`failedChecks` 给出
- * **全部**未通过项（不止首个，便于界面一次性展示需修正的全部问题），顺序即 (a)–(g)。
+ * 全部 8 项通过时 `ok === true`；任一未通过时 `ok === false`，`failedChecks` 给出
+ * **全部**未通过项（不止首个，便于界面一次性展示需修正的全部问题），顺序即 (a)–(h)。
  *
  * @param {object} card 待提交审核的工卡对象（`task_card` 行或等价对象）
  * @param {object} [ctx] 校验所需的外部数据（见模块头注「`ctx` 的形状」）
  * @returns {Readonly<{ok: boolean, failedChecks: ReadonlyArray<Readonly<{
- *   check: 'a'|'b'|'c'|'d'|'e'|'f'|'g', label: string, rejection: string, message: string,
+ *   check: 'a'|'b'|'c'|'d'|'e'|'f'|'g'|'h', label: string, rejection: string, message: string,
  *   detail: unknown}>>}>}
  */
 export function submitReviewChecklist(card, ctx = {}) {
@@ -319,6 +344,7 @@ export function submitReviewChecklist(card, ctx = {}) {
     checkChangeReasonItem(ctx),
     checkSignatureConfigItem(ctx),
     checkStageCardTypeItem(card, ctx),
+    checkClassificationItem(ctx),
   ];
   const failedChecks = results.filter((item) => item !== null);
   return Object.freeze({

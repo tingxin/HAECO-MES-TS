@@ -22,7 +22,6 @@ async function logout() {
       <nav>
         <router-link to="/task-card/list">工卡清单</router-link>
         <router-link to="/task-card/editor">工卡编制</router-link>
-        <router-link to="/task-card/step">工序编辑</router-link>
         <router-link to="/config">配置</router-link>
       </nav>
       <div class="user-area">

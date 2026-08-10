@@ -21,7 +21,7 @@ const config = vi.hoisted(() => ({ getEnums: vi.fn(), getStageConstraints: vi.fn
 const review = vi.hoisted(() => ({ submit: vi.fn(), approve: vi.fn(), reject: vi.fn(), list: vi.fn() }));
 const integration = vi.hoisted(() => ({ searchTpcDocuments: vi.fn() }));
 const bom = vi.hoisted(() => ({ listLotLinks: vi.fn(), addLotLink: vi.fn(), deleteLotLink: vi.fn(), listBases: vi.fn() }));
-const classification = vi.hoisted(() => ({ derive: vi.fn(), confirm: vi.fn() }));
+const classification = vi.hoisted(() => ({ latest: vi.fn(), history: vi.fn(), derive: vi.fn(), confirm: vi.fn() }));
 vi.mock('../../api/taskCardApi.js', () => ({ taskCardApi: taskApi }));
 vi.mock('../../api/configApi.js', () => ({ configApi: config }));
 vi.mock('../../api/reviewApi.js', () => ({ reviewApi: review }));
@@ -109,22 +109,71 @@ describe('TPC and review components', () => {
     wrapper.unmount();
   });
 
-  it('derives classification candidates and confirms the selected value with its source evidence', async () => {
-    classification.derive.mockResolvedValue({ candidates: [
-      { classification: 'Material Special Replacement', sourceRef: 'P6:11' },
-      { classification: 'Configuration(MOD)', sourceRef: 'P6:11' },
-    ], hitTier: 'P6_CardTypeFallback', sourceRef: null });
-    classification.confirm.mockResolvedValue({ classification: 'Material Special Replacement' });
+  it('handles backend check (h) and allows a single automatically derived candidate to submit', async () => {
+    review.list.mockResolvedValue([]); taskApi.listChangeRecords.mockResolvedValue([]);
+    classification.derive.mockResolvedValueOnce({ status: 'derived', classification: 'Routine', candidates: [{ classification: 'Routine' }] });
+    review.submit.mockResolvedValueOnce({ ...baseCard, status: 'UnderReview', commercialClassification: 'Routine' });
+    const wrapper = mount(ReviewPanel, { props: { cardId: 7, status: 'New', revision: 1 }, global });
+    await flushPromises(); await wrapper.vm.submit();
+    expect(review.submit).toHaveBeenCalledWith(7, { changeReason: '' });
+
+    review.submit.mockRejectedValueOnce({ message: 'classification pending', data: { failedChecks: [{
+      check: 'h', label: '商务分类确认', message: '候选尚未确认', rejection: 'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED',
+    }] } });
+    await wrapper.setProps({ commercialClassification: 'Routine' });
+    await wrapper.vm.submit(); await flushPromises();
+    expect(wrapper.get('[data-testid="review-failures"]').text()).toContain('(h)');
+    expect(wrapper.emitted('classification-required')).toBeTruthy();
+    wrapper.unmount();
+  });
+
+  it('renders every candidate source and confirms the complete selected candidate', async () => {
+    const pending = { id: 51, resultId: 51, status: 'requires_confirmation', recommendedClassification: 'Material Special Replacement', candidates: [
+      { classification: 'Material Special Replacement', hitTier: 'P5_PackageDivision', sourceRef: 'PKG-1', sources: [
+        { hitTier: 'P5_PackageDivision', sourceRef: 'PKG-1', outsourceSubtype: null },
+        { hitTier: 'P6_CardTypeFallback', sourceRef: 'card_type:11', outsourceSubtype: null },
+      ] },
+      { classification: 'Configuration(MOD)', hitTier: 'P6_CardTypeFallback', sourceRef: 'card_type:11', sources: [
+        { hitTier: 'P6_CardTypeFallback', sourceRef: 'card_type:11', outsourceSubtype: null },
+      ] },
+    ] };
+    classification.confirm.mockResolvedValue({ classification: 'Material Special Replacement', status: 'confirmed' });
     const wrapper = mount(ClassificationConfirmDialog, {
-      props: { modelValue: true, cardId: 7 }, global, attachTo: document.body,
+      props: { modelValue: true, cardId: 7, classificationResult: pending }, global, attachTo: document.body,
     });
-    await wrapper.vm.derive();
     await flushPromises();
+    expect(classification.latest).not.toHaveBeenCalled();
     expect(wrapper.vm.candidates).toHaveLength(2);
-    expect(document.body.querySelector('[data-testid="classification-candidates"]').textContent).toContain('依据：P6:11');
-    wrapper.vm.choice = 'Material Special Replacement'; await wrapper.vm.confirm();
-    expect(classification.confirm).toHaveBeenCalledWith(7, { classification: 'Material Special Replacement' });
-    expect(wrapper.emitted('confirmed')?.[0]?.[0]).toEqual({ classification: 'Material Special Replacement' });
+    const text = document.body.querySelector('[data-testid="classification-candidates"]').textContent;
+    expect(text).toContain('首次层级：P5_PackageDivision');
+    expect(text).toContain('sourceRef=PKG-1');
+    expect(text).toContain('sourceRef=card_type:11');
+    wrapper.vm.choice = wrapper.vm.choices[0]; await wrapper.vm.confirm();
+    expect(classification.confirm).toHaveBeenCalledWith(7, { derivationResultId: 51, classification: 'Material Special Replacement' });
+    expect(wrapper.emitted('confirmed')?.[0]?.[0]).toMatchObject({ classification: 'Material Special Replacement' });
+    wrapper.unmount();
+  });
+
+  it('keeps Outsource subtype in the selection and hides recommendation for type 11', async () => {
+    const pending = { id: 52, status: 'requires_confirmation', recommendedClassification: null, candidates: [{
+      classification: 'Outsource', hitTier: 'P3_OutsourceList', sourceRef: 'OUT-1',
+      outsourceSubtypes: ['L sub', '工序外委'], sources: [
+        { hitTier: 'P3_OutsourceList', sourceRef: 'OUT-1', outsourceSubtype: 'L sub' },
+        { hitTier: 'P3_OutsourceList', sourceRef: 'OUT-2', outsourceSubtype: '工序外委' },
+      ],
+    }] };
+    classification.confirm.mockResolvedValue({ classification: 'Outsource', outsourceSubtype: '工序外委' });
+    const wrapper = mount(ClassificationConfirmDialog, {
+      props: { modelValue: true, cardId: 7, cardType: '11', classificationResult: pending }, global, attachTo: document.body,
+    });
+    await flushPromises();
+    expect(wrapper.vm.choices).toHaveLength(2);
+    expect(wrapper.find('[data-testid="classification-recommendation"]').exists()).toBe(false);
+    wrapper.vm.choice = wrapper.vm.choices.find((candidate) => candidate.outsourceSubtype === '工序外委');
+    await wrapper.vm.confirm();
+    expect(classification.confirm).toHaveBeenCalledWith(7, {
+      derivationResultId: 52, classification: 'Outsource', outsourceSubtype: '工序外委',
+    });
     wrapper.unmount();
   });
 });
@@ -177,6 +226,8 @@ describe('TaskCardEditorView modes and tabs', () => {
     config.getSystemParameters.mockResolvedValue([{ key: 'organizationName', value: 'HAECO Landing Gear Services' }]);
     review.list.mockResolvedValue([]); taskApi.listChangeRecords.mockResolvedValue([]); taskApi.listRelations.mockResolvedValue([]);
     bom.listLotLinks.mockResolvedValue([]); bom.listBases.mockResolvedValue([]); taskApi.checkDuplicate.mockResolvedValue({ duplicate: false });
+    classification.latest.mockResolvedValue(null);
+    classification.derive.mockResolvedValue({ status: 'derived', classification: 'Routine', candidates: [{ classification: 'Routine' }] });
   });
 
   it('supports add defaults and view mode while keeping organization read-only', async () => {
@@ -212,6 +263,56 @@ describe('TaskCardEditorView modes and tabs', () => {
     expect(wrapper.get('[data-testid="revise-notice"]').text()).toContain('变更请先执行升版');
     expect(wrapper.find('[data-testid="save-card"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="title"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it('restores persisted pending status for any card type without clearing the current authority value', async () => {
+    classification.latest.mockResolvedValueOnce({
+      id: 61, status: 'requires_confirmation', classification: null, recommendedClassification: 'NRC',
+      candidates: [{ classification: 'NRC', hitTier: 'P2_OriginatingDoc', sourceRef: 'NR-1' }],
+    });
+    const wrapper = await mountEditor({ mode: 'edit', id: '7' }, {
+      ...baseCard, cardType: '04', commercialClassification: 'Routine', outsourceSubtype: null,
+    });
+    expect(classification.latest).toHaveBeenCalledWith(7);
+    expect(wrapper.vm.classificationPending).toBe(true);
+    expect(wrapper.vm.card.commercialClassification).toBe('Routine');
+    const reviewPanel = wrapper.getComponent(ReviewPanel);
+    expect(reviewPanel.props('classificationPending')).toBe(true);
+    expect(reviewPanel.get('[data-testid="submit-review"]').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it('does not infer pending solely from card type 11 when the persisted result is confirmed', async () => {
+    classification.latest.mockResolvedValueOnce({ id: 62, status: 'confirmed', classification: 'Configuration(MOD)', candidates: [] });
+    const wrapper = await mountEditor({ mode: 'edit', id: '7' }, {
+      ...baseCard, cardType: '11', commercialClassification: 'Configuration(MOD)',
+    });
+    expect(wrapper.vm.classificationPending).toBe(false);
+    expect(wrapper.getComponent(ReviewPanel).props('classificationPending')).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('does not send authority classification fields through ordinary PUT when editing other fields', async () => {
+    const persisted = {
+      ...baseCard,
+      commercialClassification: 'Routine',
+      outsourceSubtype: null,
+      commercial_classification: 'Routine',
+      outsource_subtype: null,
+    };
+    taskApi.update.mockResolvedValueOnce({ ...persisted, title: 'Updated' });
+    taskApi.get.mockResolvedValueOnce({ ...persisted, title: 'Updated' });
+    const wrapper = await mountEditor({ mode: 'edit', id: '7' }, persisted);
+    wrapper.vm.card.title = 'Updated';
+    wrapper.vm.changeReason = '仅修改标题';
+    await wrapper.vm.save();
+    const payload = taskApi.update.mock.calls.at(-1)[1];
+    expect(payload).toMatchObject({ title: 'Updated', reason: '仅修改标题' });
+    expect(payload).not.toHaveProperty('commercialClassification');
+    expect(payload).not.toHaveProperty('outsourceSubtype');
+    expect(payload).not.toHaveProperty('commercial_classification');
+    expect(payload).not.toHaveProperty('outsource_subtype');
     wrapper.unmount();
   });
 

@@ -386,24 +386,21 @@
 
 ### 需求 29：商务要求执行工卡分类
 
-**User Story:** 作为 TS工程师，我希望系统按各自的判定依据自动派生商务执行工卡分类，以便与商务（CMC）确认的执行范围保持一致并减少人工判断错误。
+**User Story:** 作为 TS工程师，我希望系统按已裁定的判定依据派生并持久化商务执行工卡分类，以便与商务（CMC）确认的执行范围保持一致、完整展示候选证据并避免覆盖当前权威值。
 
 #### 验收标准 (Acceptance Criteria)
 
-1. THE Task_Card_System SHALL 支持商务执行工卡分类，取值限定为 {Gear Inspection, Routine, Material Special Replacement, SB/AD/SL, NRC, LLP, Configuration(MOD), Outsource, Dummy Job}。
-2. THE Task_Card_System SHALL 以**实际业务事实**为主判定源、以工卡类型为兜底，按下列**优先级链**自上而下取首个命中的规则派生商务执行工卡分类〔优先级顺序为 Hotfix 假定，见《临时设计说明》待澄清项 A1〕：
-   - **P1 计划设置**：WHERE 计划端已将该工卡设置为 Dummy Job, THE Task_Card_System SHALL 派生为 Dummy Job。
-   - **P2 实际发起单据**：WHERE 该工卡由实际 NRC 发起单据产生, THE Task_Card_System SHALL 派生为 NRC。
-   - **P3 实际外包清单**：WHERE 该工卡出现于实际外包清单, THE Task_Card_System SHALL 派生为 Outsource，并依清单进一步区分为 {L sub, 工序外委}。
-   - **P4 零件性质**：WHERE 该工卡所涉零件性质判定为寿命件, THE Task_Card_System SHALL 派生为 LLP。
-   - **P5 工包划分分类**：WHERE 工包已对该工卡划分分类, THE Task_Card_System SHALL 依该划分派生为 Routine、Material Special Replacement 或 Configuration(MOD)。
-   - **P6 工卡类型兜底**：WHERE 上述 P1–P5 均未命中, THE Task_Card_System SHALL 依需求 43.2 的工卡类型映射派生（01→Gear Inspection、02–09→Routine、10→SB/AD/SL、11→按需求 29.3 处理）。
-3. WHERE 工卡类型为 11（客户特殊要求卡）且 P1–P5 均未命中, THE Task_Card_System SHALL 以「系统推荐 + TS 确认」方式处理：给出 Material Special Replacement 与 Configuration(MOD) 两个候选推荐值，并要求 TS_Engineer 确认其一后方可提交审核〔判定依据待澄清，见《临时设计说明》A1〕。
-4. WHEN 同一优先级层级内存在多条规则同时命中, THE Task_Card_System SHALL 不自动裁决，而 SHALL 给出全部命中候选值并要求 TS_Engineer 确认其一。
-5. THE Task_Card_System SHALL 记录每条商务执行工卡分类的派生结果、命中的优先级层级与派生依据来源，以便追溯。
-6. WHERE 派生结果由 TS_Engineer 确认或人工指定, THE Task_Card_System SHALL 标记该结果为「人工确认」并记录确认人与确认时间。
-7. IF 人工指定了取值集合以外的值, THEN THE Task_Card_System SHALL 拒绝该值并提示仅允许选择预定义取值。
-8. THE Task_Card_System SHALL 允许业务方维护优先级链的层级顺序而无需修改程序代码。
+1. THE Task_Card_System SHALL 支持商务执行工卡分类，取值限定为 {Gear Inspection, Routine, Material Special Replacement, SB/AD/SL, NRC, LLP, Configuration(MOD), Outsource, Dummy Job}；Outsource SHALL 同时选择二级类型 {L sub, 工序外委}。
+2. THE Task_Card_System SHALL 依据运行时 `derivation_priority_config` 的 `tier_order` 与 `enabled` 评估全部启用层级并汇总全部命中候选；业务方于 **2026-08-10 已裁定**的默认顺序为 P1→P6：P1 计划设置→Dummy Job；P2 实际发起单据→NRC；P3 实际外包清单→Outsource；P4 零件性质→LLP；P5 工包划分→Routine / Material Special Replacement / Configuration(MOD)；P6 工卡类型映射→需求 43.2 的兜底分类。系统 SHALL 以候选首次命中的运行时层级顺序排序；P6 启用时 SHALL 与 P1–P5 事实候选并存且不得覆盖事实来源，显式停用时 SHALL 不参与；类型 11 特例不受该配置影响。
+3. WHERE 工卡类型为 11（客户特殊要求卡）, THE Task_Card_System SHALL 不评估 P1–P5 且固定返回 Material Special Replacement 与 Configuration(MOD) 两个候选，`recommendedClassification` SHALL 为 `null`，并要求 TS_Engineer 确认其一后方可提交审核。
+4. WHEN 全部命中仅聚合为一个不同分类候选, THE Task_Card_System SHALL 自动派生该分类并允许继续提交审核；WHEN 聚合为多个不同分类候选, THE Task_Card_System SHALL 将状态持久化为 `requires_confirmation`、以优先顺序中的首个候选作为推荐（类型 11 除外）并阻止提交审核直至确认。
+5. THE Task_Card_System SHALL 对同一分类的重复命中聚合为一个候选，并在候选中保留首次命中层级以及全部 `sources`；每条 source SHALL 包含 `hitTier`、`sourceRef` 与 `outsourceSubtype`。
+6. WHEN TS_Engineer 确认候选, THE Task_Card_System SHALL 要求提交当前待确认结果的 `derivationResultId` 与完整候选选择；WHERE 分类为 Outsource, 请求 SHALL 同时包含属于该候选的 `outsourceSubtype`。过期结果、非候选分类或 subtype 不匹配 SHALL 被拒绝。
+7. THE Task_Card_System SHALL 以追加式记录持久化每次派生/确认的 `resultId`、`status`、候选、推荐值、命中证据、确认人与确认时间，并提供最新结果及完整历史查询。
+8. THE `task_card.commercial_classification` 与 `task_card.outsource_subtype` SHALL 为当前权威值；`requires_confirmation` 或 `undetermined` 派生结果 SHALL NOT 清空既有权威值，只有 `derived` 或 `confirmed` 结果方可同步更新权威值。
+9. WHEN 打开已有工卡或分类确认界面, THE Task_Card_System SHALL 依据最新持久化 `status` 恢复待确认状态，不得仅凭工卡类型或当前分类值推断；确认界面 SHALL 优先使用传入或最新的 pending 结果，仅在没有 pending 结果时重新派生。
+10. WHERE 派生结果由 TS_Engineer 确认, THE Task_Card_System SHALL 标记该结果为「人工确认」并记录确认人与确认时间；IF 人工指定了取值集合以外的值, THEN SHALL 拒绝该值。
+11. THE Task_Card_System SHALL 允许业务方维护 P1–P6 层级配置而无需修改程序代码；该配置用于启停与证据排序，不改变本需求已裁定的类型 11 特例。
 
 ### 需求 30：工序 Operation 字段带出（只读）
 
@@ -468,7 +465,8 @@
    - (d) 能力清单范围校验（机型/起落架类型/Skill 组合，见需求 39.2）；
    - (e) 变更原因填报校验（升版或变更提交时，见需求 19.2）；
    - (f) 签署项配置校验（签署要求属性为「签署」的单据须至少配置一个签署项，见需求 45.8、45.9）；
-   - (g) Stage 与工卡类型组合合法性校验（见需求 46.10、46.11）。
+   - (g) Stage 与工卡类型组合合法性校验（见需求 46.10、46.11）；
+   - (h) 商务分类持久状态校验（见需求 29.3、29.4、29.8、29.9）：最新结果为 `requires_confirmation`，或类型 11 尚无已确认权威分类时阻止提交；单候选 `derived` 结果已同步权威值时允许继续提交。
 2. IF 上述任一校验未通过, THEN THE Task_Card_System SHALL 阻止提交审核、保持工卡状态为"新增(New)"并提示未通过的具体校验项。
 3. WHERE 工卡状态为"审核中(UnderReview)", THE Task_Card_System SHALL 阻止对该工卡内容的编辑（该约束为需求 49.1「仅新增态可编辑」的一个特例，统一按需求 49 执行）。
 4. WHEN 具备审卡权限的用户对状态为"审核中"的工卡执行批准, THE Task_Card_System SHALL 将工卡状态置为"生效(Effective)"并记录审核人与批准时间。
@@ -580,19 +578,16 @@
 
 ### 需求 43：工卡类型与商务分类映射
 
-**User Story:** 作为 TS工程师，我希望系统维护工卡类型与商务执行工卡分类之间的映射关系，以便支撑需求 29 的自动派生。
+**User Story:** 作为 TS工程师，我希望系统维护工卡类型与商务执行工卡分类之间的映射关系，以便支撑需求 29 的候选聚合与 P6 兜底。
 
 #### 验收标准 (Acceptance Criteria)
 
 1. THE Task_Card_System SHALL 维护工卡类型（01–11）与商务执行工卡分类之间的映射关系。
-2. THE 映射关系 SHALL 至少包含以下全部条目（对齐蓝图「工卡类型区分」表说明列）：
-   - 01（收货检查工卡）→ Gear Inspection 或 Routine（双值，判定顺序见需求 29.2）
-   - 02（拆分卡）、03（预处理卡）、04（IR卡）、05（IR Lot卡）、06（组装/测试卡）、07（电线卡）、08（LRU Subcontract卡）、09（单独件维修卡）→ Routine
-   - 10（AD/SB/SL 卡）→ SB/AD/SL
-   - 11（客户特殊要求卡）→ Material Special Replacement 或 Configuration(MOD)
-3. THE 映射关系 SHALL 仅作为需求 29.2 优先级链中 **P6 兜底层**使用，不得覆盖 P1–P5 的实际业务事实判定结果。
-4. WHERE 某工卡类型可映射至多个商务分类（如 01、11）, THE Task_Card_System SHALL 依需求 29.3、29.4 以「系统推荐 + TS 确认」方式确定最终分类。
-5. THE Task_Card_System SHALL 允许业务方维护该映射关系而无需修改程序代码。
+2. THE 映射关系 SHALL 至少包含以下条目：01→Gear Inspection、Routine；02–09→Routine；10→SB/AD/SL；11→Material Special Replacement、Configuration(MOD)。
+3. WHERE 工卡类型不为 11, THE 映射关系 SHALL 作为需求 29.2 的 P6 候选来源参与全量聚合，并不得覆盖或丢失 P1–P5 的候选与证据。
+4. WHERE 工卡类型为 11, THE Task_Card_System SHALL 按需求 29.3 固定返回两个候选、忽略 P1–P5 且不显示推荐；该行为已于 2026-08-10 裁定，不再作为待澄清项。
+5. WHERE 映射产生多个不同候选（如类型 01）, THE Task_Card_System SHALL 按需求 29.4–29.6 持久化待确认状态、展示全部来源并以完整候选对象确认。
+6. THE Task_Card_System SHALL 允许业务方维护该映射关系而无需修改程序代码；任何映射值仍受商务分类封闭值域约束。
 
 ### 需求 44：版本取代与单一生效版本保障
 

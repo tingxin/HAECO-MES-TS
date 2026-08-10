@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import router from './index.js';
+import router, { requireTaskCardContext } from './index.js';
 
 describe('application routes smoke', () => {
   it('registers every real screen and resolves JOB parameters', () => {
@@ -11,6 +11,13 @@ describe('application routes smoke', () => {
     const resolved = router.resolve('/job/JOB-001');
     expect(resolved.name).toBe('job');
     expect(resolved.params.jobNo).toBe('JOB-001');
+  });
+
+  it('requires a task-card context before entering process-step editing', () => {
+    expect(requireTaskCardContext({ query: {} })).toEqual({ name: 'task-card-list' });
+    expect(requireTaskCardContext({ query: { cardId: '' } })).toEqual({ name: 'task-card-list' });
+    expect(requireTaskCardContext({ query: { cardId: '7' } })).toBe(true);
+    expect(requireTaskCardContext({ query: { id: '8' } })).toBe(true);
   });
 
   it('imports the lazy JOB and config views as real Vue components', async () => {

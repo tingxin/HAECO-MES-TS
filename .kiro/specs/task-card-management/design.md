@@ -188,8 +188,16 @@ sequenceDiagram
   W->>A: PUT /api/task-cards/:id （【保存】）
   A->>D: 校验 Stage×类型约束 + 枚举 → 保存 + 记录 lastUpdate/operatorId
   U->>W: 【提交审核】
+  W->>A: GET /api/task-cards/:id/classification/latest
+  A-->>W: 最新 status/candidates/recommendedClassification
+  alt 最新结果 requires_confirmation 或类型11未确认
+    W-->>U: 打开候选确认框并阻止提交
+  else 尚无权威分类
+    W->>A: POST /classification/derive
+    A-->>W: 单候选 derived（继续）/ 多候选 requires_confirmation（阻止）
+  end
   W->>A: POST /api/task-cards/:id/submit-review
-  A->>A: 校验(a)查重 (b)枚举 (c)必填 (d)能力清单<br/>(e)变更原因 (f)签署项 (g)Stage×类型
+  A->>A: 校验(a)查重 (b)枚举 (c)必填 (d)能力清单<br/>(e)变更原因 (f)签署项 (g)Stage×类型 (h)分类持久状态
   A->>D: 全部通过 → status = UnderReview（内容自此冻结）
   A-->>W: 任一不通过 → { code:400, 未通过校验项 }
   M->>W: 【批准】/【驳回】(审核意见必填)
@@ -237,7 +245,7 @@ sequenceDiagram
 
 | 方法 & 路径 | 说明 | 需求 |
 |-------------|------|------|
-| `POST /api/task-cards/:id/submit-review` | 提交审核：执行完整校验清单 (a) 查重 (b) 枚举 (c) 必填 (d) 能力清单 (e) 变更原因 (f) 签署项 **(g) Stage×工卡类型组合** 后置 UnderReview | 34.1, 34.2, 10.4, 10.5, 19.2, 39.2, 45.9, 46.10 |
+| `POST /api/task-cards/:id/submit-review` | 提交审核：执行完整校验清单 (a) 查重 (b) 枚举 (c) 必填 (d) 能力清单 (e) 变更原因 (f) 签署项 **(g) Stage×工卡类型组合 (h) 最新持久化商务分类须唯一派生或人工确认** 后置 UnderReview | 34.1, 34.2, 10.4, 10.5, 19.2, 29.4, 29.6, 39.2, 45.9, 46.10 |
 | `POST /api/task-cards/:id/approve` | 批准（审核意见必填、一编一审、事务内触发版本取代） | 34.4, 34.6, 34.7, 22.3, 44.1, 44.2, 44.8 |
 | `POST /api/task-cards/:id/reject` | 驳回（审核意见必填，状态回 New） | 34.5, 34.6, 34.7 |
 | `GET /api/task-cards/:id/reviews` | 按版本查询审核记录 | 34.8, 34.9 |
@@ -286,8 +294,10 @@ sequenceDiagram
 
 | 方法 & 路径 | 说明 | 需求 |
 |-------------|------|------|
-| `POST /api/task-cards/:id/classification/derive` | 按优先级链派生商务分类，返回结果或候选集 | 29.1–29.5, 43.3, 43.4 |
-| `POST /api/task-cards/:id/classification/confirm` | 人工确认/指定分类（标记确认人与时间） | 29.3, 29.4, 29.6, 29.7 |
+| `POST /api/task-cards/:id/classification/derive` | 评估启用的 P1–P6 并聚合全部候选，返回 `{resultId,status,classification,candidates,recommendedClassification}`；候选含首次层级与全部 `sources` | 29.1–29.5, 43.3–43.5 |
+| `GET /api/task-cards/:id/classification/latest` | 读取最新持久化派生/确认结果，供编辑页按 `status` 恢复 pending | 29.7–29.9 |
+| `GET /api/task-cards/:id/classification/history` | 按追加顺序读取完整派生/确认历史 | 29.7 |
+| `POST /api/task-cards/:id/classification/confirm` | body `{derivationResultId,classification,outsourceSubtype?}`；校验最新结果与完整候选，Outsource subtype 必填 | 29.3, 29.6, 29.10 |
 | `GET /api/stage-constraints` | Stage × 工卡类型允许组合与横切取值 | 46.9, 46.12, 46.13 |
 | `PUT /api/stage-constraints` | **维护约束表与横切取值**（`config_write` 权限）：写 `stage_card_type_constraint` / `stage_crosscut`，改配置即改校验结果，不改代码 | 46.14 |
 | `GET /api/card-type-commercial-map` / `PUT ...` | **维护工卡类型 → 商务分类映射**（P6 兜底层，`config_write` 权限） | 43.1, 43.2, 43.5 |
@@ -357,7 +367,7 @@ sequenceDiagram
 | `relation.js` | `syncRelationKeyInfo(relation, keyInfo)` | 关键信息（机型/件号/序列号/工卡编号）变更同步至关联记录快照列 | 21.5 |
 | `relation.js` | `requiredSignDocTypes(relations, signRuleCfg)` | 从关联单据中取出签署要求属性为「签署」的类型集合，供 submit-review 校验项 (f) | 16.4, 45.8, 45.9 |
 | `snapshot.js` | `buildStepSnapshots(steps, captureItems, components, sigReqs)` | 释放时生成工序内容快照（不可变），JOB 执行仅依赖快照 | 49.5–49.7, 37.5 |
-| `review.js` | `submitReviewChecklist(card, ctx)` | 提交审核完整校验清单 (a) 查重 (b) 枚举 (c) 必填 (d) 能力清单 (e) 变更原因 (f) 签署项 (g) Stage×类型，返回未通过项 | 34.1, 34.2, 46.10 |
+| `review.js` | `submitReviewChecklist(card, ctx)` | 提交审核完整校验清单 (a) 查重 (b) 枚举 (c) 必填 (d) 能力清单 (e) 变更原因 (f) 签署项 (g) Stage×类型 (h) 最新持久化商务分类唯一派生或人工确认，返回未通过项 | 29.4, 29.6, 34.1, 34.2, 46.10 |
 | `review.js` | `canApprove(card, userId)` | 一编一审：审核人 ≠ 编制人 | 22.3 |
 | `review.js` | `acceptReviewAction(card, action, comment)` | 批准/驳回接受条件（态=审核中 且 意见非空） | 34.4–34.7, 34.10 |
 | `batch-replace.js` | `batchReplace(cards, spec, reason)` | 批量替换：仅 New 态、原因必填、逐卡留痕、幂等、整批回滚语义 | 20.1–20.10 |
@@ -365,7 +375,8 @@ sequenceDiagram
 | `process-id.js` | `generateProcessId(card, seq)` | 工序编号（A–Z 后接 AA、AB…，见 D-02） | 11.1 |
 | `barcode.js` | `generateBarcode(jobNo, processId)` | JOB 工序条码（`{JOB No}-{Process ID}`，见 D-03）；编制态不生成 | 15.1–15.4 |
 | `filter.js` | `matchesFilters(card, filters)` | 清单 AND 筛选（空条件全通过） | 1.2–1.5, 4.4 |
-| `classification.js` | `deriveCommercialClassification(card, sources, priorityCfg)` | 优先级链 P1–P6 首个命中派生；同层多命中/类型 11 产出候选集 | 29.1–29.5, 43.3, 43.4 |
+| `classification.js` | `deriveCommercialClassification(card, sources, priorityCfg)` | 按已裁定 P1→P6 顺序评估并聚合全部命中：同分类合并全部 `sources`，首个候选为推荐；单候选 `derived`，多候选 `requires_confirmation`；类型 11 忽略 P1–P5、固定双候选且推荐为 null | 29.1–29.5, 43.3–43.5 |
+| `classification.js` | `confirmClassification(derivation, choice, ctx)` | 仅接受当前 `derivationResultId` 对应的完整候选；Outsource 必须回传候选内 subtype，确认后保留所选证据并标记确认人/时间 | 29.6, 29.10 |
 | `stage-constraint.js` | `validateStageCardType(stage, cardType, cfg)` | Stage × 类型强约束校验（允许组合 ∪ 横切取值） | 46.9–46.11, 46.13 |
 | `stage-constraint.js` | `defaultStageFor(cardType, cfg)`、`selectableStages(cardType, cfg)` | 单一允许 Stage 时给出**默认值**（不置只读），并返回可改选范围 = 该类型允许组合 ∪ 横切取值（需求 46.12 修正后） | 46.12, 46.13 |
 | `stage-constraint.js` | `selectableForStandardPackage(card)` | 组包取卡谓词：`stage === "RTN" && status === "Effective"`；`stage === "WFD"` 恒排除。本函数为本模块向 Work Package List 模块暴露的**契约谓词**，取卡查询由 WPL 模块实现 | 46.3, 46.5, 42.4, 44.5 |
@@ -407,8 +418,8 @@ sequenceDiagram
 | `SignatureRequirementPanel` | 工序级签署项配置（角色/盖章/日期/顺序） | 45.1–45.5 |
 | `SafetyWarningEditor` | 安全警示/视觉提示（图片·视频）/维修技巧编辑与关键标记 | 31.1–31.4 |
 | `SafetyAckDialog` | 执行前强制查看确认弹窗；未确认禁用进入执行 | 31.5, 31.6 |
-| `ReviewPanel` | 提交审核/批准/驳回，审核意见必填，审核记录按版本展示 | 34 |
-| `ClassificationConfirmDialog` | 商务分类候选集人工确认（含派生依据展示） | 29.3, 29.4, 29.6 |
+| `ClassificationConfirmDialog` | 优先使用传入/最新 pending，必要时 derive；展示全部候选、推荐（类型 11/推荐 null 隐藏）、首次层级及全部 sources；以含分类/subtype/来源的稳定 key 渲染，保留完整候选对象并携带 `derivationResultId` 确认 | 29.3–29.10 |
+| `ReviewPanel` | 提交审核/批准/驳回，审核意见必填；pending/类型 11 未确认时体验层阻止，单候选自动派生可继续；展示并响应后端 (h) 分类门禁 | 34 |
 | `TpcLookupDialog` | TPC 文档检索选择，回填四字段 | 7.3, 25.1 |
 | `BatchReplaceDialog` | 批量替换（原因必填、态限制提示、结果逐条反馈） | 20 |
 | `BatchCopyDialog` | 批量复制编号规则（前缀/后缀/起始序号/步长）与事后调整 | 38.8–38.10 |
@@ -515,7 +526,7 @@ const COMMERCIAL_CLASSIFICATION = ["Gear Inspection","Routine","Material Special
                         "SB/AD/SL","NRC","LLP","Configuration(MOD)","Outsource","Dummy Job"];
 const OUTSOURCE_SUBTYPE = ["L sub","工序外委"];
 
-// 商务分类派生优先级链（需求 29.2）⚠ 顺序为 Hotfix 假定（临时设计说明 A1）
+// 商务分类派生优先级链（需求 29.2，业务方 2026-08-10 已裁定）
 const DERIVATION_PRIORITY = [
   "P1_PlanSetting",      // Dummy Job
   "P2_OriginatingDoc",   // NRC
@@ -599,7 +610,7 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 >
 > **执行期字段不在 task_card**：OWNER / JOB TARGET DATE / Check / 进厂·出厂 P/N·S/N / CSNo. / WORK ORDER 及 Process Card 字段（PART No/S/N/DES./Operation Type）均属执行域，存于 `job` 表（需求 26.2 要求编制态不呈现空壳栏位，需求 37.5 要求两域分离）。
 >
-> **商务分类权威源**：`task_card.commercial_classification` 为**当前权威值**（供清单筛选与打印使用）；`commercial_classification_result` 为**追加式派生审计轨迹**（记录每次派生的命中层级与依据）。服务层保证前者恒等于后者中最新一条的 `classification`。
+> **商务分类权威源与 pending 语义**：`task_card.commercial_classification` / `outsource_subtype` 为**当前权威值**（供审核、筛选与下游使用）；`commercial_classification_result` 为追加式状态与证据轨迹。只有最新结果为 `derived` 或 `confirmed` 时服务层才同步权威值；`requires_confirmation` / `undetermined` 只追加轨迹，**不得清空既有权威值**。前端以轨迹最新行的 `status` 恢复 pending，不以 `card_type='11'` 或权威值是否为空猜测。
 
 #### 表：reference_document（参考文件，需求 9）
 
@@ -820,7 +831,7 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 - **`review_record`**：`id, card_id, card_revision, action('approve'|'reject'), reviewer, comment NOT NULL, reviewed_at` — 按版本留存审核记录（需求 34.6–34.9、34.11）。
 - **`supersede_record`**：`id, task_no, superseded_revision, superseding_revision, superseded_at` — 版本取代关系；新版本批准生效时于**同一事务**写入并将原生效版本迁至 Superseded，失败则回滚该次批准（需求 44.1、44.2、44.8）。
 - **`change_record`**：`id, card_id, card_revision, change_type('edit'|'delete'|'revise'|'batch_replace'|'void'), field NULL, old_value NULL, new_value NULL, reason NOT NULL, operator_id, timestamp` — 变更记录；批量替换逐卡各写一条（需求 19.1–19.3、20.8、42.5）。
-- **`commercial_classification_result`**：`id, card_id, classification, hit_tier, source_ref, is_manual_confirmed, confirmed_by NULL, confirmed_at NULL, created_at` — 追加式派生审计轨迹（需求 29.5、29.6）。
+- **`commercial_classification_result`**：`id, card_id, status('derived'|'requires_confirmation'|'undetermined'|'confirmed'), classification NULL, candidates_json JSON, recommended_classification NULL, outsource_subtype NULL, hit_tier NULL, source_ref NULL, reason_code NULL, evaluated_tiers_json JSON, derivation_result_id NULL, is_manual_confirmed, confirmed_by NULL, confirmed_at NULL, created_at` — 只追加不改。派生行以自身 `id` 作为返回 `resultId`；确认行以 `derivation_result_id` 指向所确认的 pending 行。`candidates_json` 中每个候选保存 `{classification,outsourceSubtype,outsourceSubtypes,hitTier,sourceRef,sources[]}`，每个 source 保存 `{hitTier,sourceRef,outsourceSubtype}`（需求 29.5–29.10）。
 - **`migration_batch`** / **`migration_record`**：批次与逐条结果（`status('success'|'failed')`, `failure_reason`），支撑迁移报告（需求 41.4、41.5）。
 - **`work_package_release`**：`id, card_id, job_no, package_ref, released_at, result` — 发布结果记录（需求 24.3）。
 
@@ -992,7 +1003,7 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 
 ### Property 19: 提交审核校验完备性与审核记录归档
 
-*For any* 工卡，其可进入「审核中」当且仅当校验清单 (a) 查重、(b) 枚举、(c) 必填、(d) 能力清单、(e) 变更原因、(f) 签署项配置、**(g) Stage×工卡类型组合**全部通过；任一未通过则状态保持「新增」并给出未通过项。*For any* 审核动作（批准/驳回），被接受当且仅当状态为「审核中」且审核意见非空；每次被接受的动作使该版本审核记录数恰好增加 1。*For any* 经升版产生的新版本，其审核记录数初始为 0（不继承上一版本的审核结果）。
+*For any* 工卡，其可进入「审核中」当且仅当校验清单 (a) 查重、(b) 枚举、(c) 必填、(d) 能力清单、(e) 变更原因、(f) 签署项配置、**(g) Stage×工卡类型组合、(h) 最新持久化商务分类为唯一 `derived` 或人工 `confirmed`** 全部通过；任一未通过则状态保持「新增」并给出未通过项。*For any* 审核动作（批准/驳回），被接受当且仅当状态为「审核中」且审核意见非空；每次被接受的动作使该版本审核记录数恰好增加 1。*For any* 经升版产生的新版本，其审核记录数初始为 0（不继承上一版本的审核结果）。
 
 > 需求 34.3「审核中禁止编辑」不由本属性覆盖，改由 Property 26（编辑态封闭性）统一断言——原设计在本属性的 Validates 列声明了 34.3 但属性正文未作任何相关断言，属追溯标签虚假命中，已移除。
 
@@ -1016,11 +1027,11 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 
 **Validates: Requirements 40.1, 40.2, 40.3, 40.4, 40.5**
 
-### Property 23: 商务分类派生优先级确定性
+### Property 23: 商务分类候选聚合、推荐与确认一致性
 
-*For any* 工卡与其分类来源输入，派生结果等于优先级链 `DERIVATION_PRIORITY` 中**首个命中层级**给出的分类，落在预定义取值集合内且对相同输入具有确定性；类型映射（P6）永不覆盖 P1–P5 的命中结果；同层多命中或类型 11 双值时不自动裁决而产出候选集要求人工确认；每条结果均记录命中层级与依据来源，人工确认时标记确认人与时间。
+*For any* 工卡、来源集合与启用层级配置，派生 SHALL 按已裁定 P1→P6 顺序评估并聚合全部合法命中；同一分类仅形成一个候选且其 `sources` 恰等于该分类全部去重证据，候选 `hitTier/sourceRef` 等于首次证据。非类型 11 时 `recommendedClassification` 等于首个候选；类型 11 恒固定为 MSR/MOD 双候选、忽略 P1–P5 且推荐为 `null`。一个不同候选产生 `derived`，多个产生 `requires_confirmation`。确认仅在 `derivationResultId` 指向最新 pending 且选择属于候选时成功；Outsource 还必须选择该候选允许的 subtype。pending/undetermined 不改变既有 `task_card` 权威值，derived/confirmed 才同步。
 
-**Validates: Requirements 29.1, 29.2, 29.3, 29.4, 29.5, 29.6, 29.7, 43.3, 43.4**
+**Validates: Requirements 29.1, 29.2, 29.3, 29.4, 29.5, 29.6, 29.7, 29.8, 29.9, 29.10, 29.11, 34.1, 43.2, 43.3, 43.4, 43.5, 43.6**
 
 ### Property 24: 作废前置校验
 
@@ -1112,7 +1123,7 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 |------|----------|--------|------|
 | 下拉字段取值非法 | `isValidEnumValue` + SQLite CHECK 双重拦截 | 400 | 6.9 |
 | Stage 与工卡类型组合非法 | `validateStageCardType` 失败，提示该类型允许的 Stage 范围 | 400 | 46.10, 46.11 |
-| 提交审核校验未通过 | 返回未通过项清单 (a)–(g)，状态保持「新增」；(g) 为 Stage×类型组合校验，保存与提交两条路径**均**执行 | 400 | 34.1, 34.2, 46.10 |
+| 提交审核校验未通过 | 返回未通过项清单 (a)–(h)，状态保持「新增」；(g) 为 Stage×类型组合校验，(h) 为最新持久化商务分类唯一派生/人工确认门禁，既有 (a)–(g) 不弱化 | 400 | 29.4, 29.6, 34.1, 34.2, 46.10 |
 | 工卡编号重复 | `checkDuplicate` 命中，提示重复并高亮 Task No | 409 | 10.5, 38.6 |
 | 能力清单超范围 | `checkCapability` 失败，提示超出已批准能力范围 | 422 | 39.3 |
 | 缺失签署项配置 | 签署要求为「签署」的单据未配置签署项，阻止提交 | 400 | 45.9 |
@@ -1136,7 +1147,7 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 | 角色越权操作 | `authorize` 中间件拒绝并写入 `access_denial_log`（staffNo/role/权限点/方法/路径/时间） | **403** | 47.10 |
 | 能力清单无当前有效版本 | 按需求 39.4 规则未选出有效版本，提示能力清单缺失或已过期，阻止提交审核 | 422 | 39.1, 39.4 |
 | 迁移单条校验失败 | 跳过该条、继续其余，记入迁移报告失败原因 | 0（整批成功） | 41.4, 41.5 |
-| 商务分类同层多命中/类型 11 双值 | 返回候选集要求人工确认，不自动裁决 | 0（需确认） | 29.3, 29.4 |
+| 商务分类多候选 / 类型 11 固定双候选 | 持久化 `requires_confirmation`，返回全部候选；非 11 返回首候选推荐，类型 11 推荐为 null；确认前阻止审核 | 0（需确认） | 29.3–29.6, 34.1(h) |
 | 变更原因为空（含纯空白） | `buildChangeRecords` 拒绝，变更不落库 | 400 | 19.2 |
 | SWS 复制指定编号重复 | `exec_document` 的 `UNIQUE(exec_doc_type, doc_no, revision)` 命中，提示编号重复 | 409 | 23.1, 23.2, 38.2 |
 | 无 `config_write` 权限维护约束表/映射/优先级链 | `authorize` 拒绝并写 `access_denial_log` | **403** | 29.8, 43.5, 46.14, 47.10 |
@@ -1188,7 +1199,7 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 
 ### 接口/集成测试
 
-- `supertest` 端到端走查主链路：`POST /api/session`（选定身份）→ `POST 新增` → `PUT 保存` → `POST submit-review`（**七项**校验）→ `POST reject`（回 New）→ `POST submit-review` → `POST approve`（一编一审 + 版本取代，断言语句顺序不触发唯一索引冲突）→ `POST release`（生成 JOB + 工序快照 + 条码）→ `POST job-processes/:id/start|finish`（起止时间落 JOB）→ `POST signatures` → `GET archive-status`。
+- `supertest` 端到端走查主链路：`POST /api/session`（选定身份）→ `POST 新增` → `PUT 保存` → `POST submit-review`（**八项**校验，含 (h) 商务分类持久状态门禁）→ `POST reject`（回 New）→ `POST submit-review` → `POST approve`（一编一审 + 版本取代，断言语句顺序不触发唯一索引冲突）→ `POST release`（生成 JOB + 工序快照 + 条码）→ `POST job-processes/:id/start|finish`（起止时间落 JOB）→ `POST signatures` → `GET archive-status`。
 - 编辑态闸门链路：对同一工卡分别在 New / UnderReview / Effective / Superseded / Void 五态调用全部编辑类端点，断言仅 New 通过、其余返回 422 且内容未变；再断言生效态工卡经升版后可编辑。
 - 快照隔离链路：释放 JOB → 升版并修改工序内容 → 断言原 JOB 读取到的工序内容不变。
 - 权限链路：以不同角色调用同一端点，断言 TS 不可写 PPC 工时、Planning 不可改编制内容、批量替换需独立权限点、越权返回 403 且 `access_denial_log` 新增一条。

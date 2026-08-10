@@ -1,235 +1,272 @@
-/**
- * 商务分类优先级链派生单元测试（任务 8.1）。
- * 覆盖：配置驱动顺序与停用层级、首个命中、P6 不覆盖 P1–P5、同层多命中与类型 01/11 双值候选集、
- * 命中层级与依据来源记录、人工确认与越界取值拒绝。
- *
- * 需求：29.1–29.8、43.2–43.5
- */
-
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  deriveCommercialClassification,
   confirmClassification,
-  normalizePriorityTiers,
-  normalizeCardTypeMap,
+  deriveCommercialClassification,
   isValidCommercialClassification,
-  DERIVATION_STATUS,
+  isValidOutsourceSubtype,
+  normalizeCardTypeMap,
+  normalizePriorityTiers,
   DERIVATION_REASON,
+  DERIVATION_STATUS,
   TIER_P1,
+  TIER_P2,
   TIER_P3,
+  TIER_P4,
   TIER_P5,
   TIER_P6,
 } from './classification.js';
 import { DERIVATION_PRIORITY } from './enums.js';
 
-/** 模拟 `derivation_priority_config` 表行集（种子默认顺序） */
-const defaultTiers = DERIVATION_PRIORITY.map((tierCode, i) => ({
-  tier_code: tierCode, tier_order: i + 1, enabled: 1,
+const tiers = DERIVATION_PRIORITY.map((tier_code, index) => ({
+  tier_code,
+  tier_order: index + 1,
+  enabled: 1,
 }));
-
-/** 模拟 `card_type_commercial_map` 表行集（需求 43.2 全量条目） */
-const defaultMap = [
+const map = [
   { card_type: '01', commercial_classification: 'Gear Inspection' },
   { card_type: '01', commercial_classification: 'Routine' },
   ...['02', '03', '04', '05', '06', '07', '08', '09']
-    .map((t) => ({ card_type: t, commercial_classification: 'Routine' })),
+    .map((card_type) => ({ card_type, commercial_classification: 'Routine' })),
   { card_type: '10', commercial_classification: 'SB/AD/SL' },
   { card_type: '11', commercial_classification: 'Material Special Replacement' },
   { card_type: '11', commercial_classification: 'Configuration(MOD)' },
 ];
-
-const cfg = { tiers: defaultTiers, cardTypeMap: defaultMap };
-const noSources = {
+const cfg = { tiers, cardTypeMap: map };
+const empty = {
   planDummyJob: false,
   nrcOriginatingDoc: null,
   outsourceEntry: null,
   partNature: false,
   packageDivision: null,
 };
+const names = (result) => result.candidates.map((item) => item.classification);
 
-describe('normalizePriorityTiers（需求 29.8：顺序取自配置表）', () => {
-  it('按 tier_order 排序并跳过 enabled=0 的层级', () => {
-    const tiers = normalizePriorityTiers([
+describe('商务分类运行时配置', () => {
+  it('按 tier_order 排序、跳过停用/未知层级并去除重复层级', () => {
+    expect(normalizePriorityTiers([
       { tier_code: TIER_P5, tier_order: 2, enabled: 1 },
       { tier_code: TIER_P1, tier_order: 9, enabled: 0 },
       { tier_code: TIER_P3, tier_order: 1, enabled: 1 },
+      { tier_code: TIER_P3, tier_order: 8, enabled: 1 },
+      { tier_code: 'P9_Unknown', tier_order: 0, enabled: 1 },
+    ])).toEqual([
+      { tierCode: TIER_P3, tierOrder: 1 },
+      { tierCode: TIER_P5, tierOrder: 2 },
     ]);
-    expect(tiers.map((t) => t.tierCode)).toEqual([TIER_P3, TIER_P5]);
   });
 
-  it('剔除未知层级代码与重复条目', () => {
-    const tiers = normalizePriorityTiers([
-      { tier_code: 'P9_Unknown', tier_order: 1, enabled: 1 },
-      { tier_code: TIER_P1, tier_order: 3, enabled: 1 },
-      { tier_code: TIER_P1, tier_order: 5, enabled: 1 },
+  it('类型映射保持配置顺序、按值去重并剔除非法分类', () => {
+    const normalized = normalizeCardTypeMap([
+      { card_type: '01', commercial_classification: 'Gear Inspection' },
+      { card_type: '01', commercial_classification: 'Routine' },
+      { card_type: '01', commercial_classification: 'Routine' },
+      { card_type: '01', commercial_classification: 'Nonsense' },
     ]);
-    expect(tiers).toEqual([{ tierCode: TIER_P1, tierOrder: 3 }]);
+    expect(normalized['01']).toEqual(['Gear Inspection', 'Routine']);
+  });
+
+  it('优先级配置缺失时 fail closed，不回退编译期常量', () => {
+    const result = deriveCommercialClassification({ card_type: '02' }, empty, undefined);
+    expect(result).toMatchObject({
+      status: DERIVATION_STATUS.UNDETERMINED,
+      reasonCode: DERIVATION_REASON.PRIORITY_CONFIG_MISSING,
+      candidates: [],
+    });
   });
 });
 
-describe('deriveCommercialClassification 首个命中（需求 29.2）', () => {
-  it('P1 命中即为 Dummy Job，且携带命中层级与依据来源', () => {
-    const result = deriveCommercialClassification(
-      { id: 'c1', card_type: '10' },
-      { ...noSources, planDummyJob: { planRef: 'PLAN-001' }, nrcOriginatingDoc: { docNo: 'NR-1' } },
-      cfg,
-    );
-    expect(result.status).toBe(DERIVATION_STATUS.DERIVED);
-    expect(result.classification).toBe('Dummy Job');
-    expect(result.hitTier).toBe(TIER_P1);
-    expect(result.sourceRef).toBe('PLAN-001');
+describe('商务分类全候选聚合', () => {
+  it('评估全部启用 P1-P6，并按运行时层级顺序排列候选与推荐', () => {
+    const result = deriveCommercialClassification({ card_type: '08' }, {
+      planDummyJob: { planRef: 'PLAN-1' },
+      nrcOriginatingDoc: { docNo: 'NR-1' },
+      outsourceEntry: { listRef: 'OS-1', subtype: 'L sub' },
+      partNature: { partNo: 'LLP-1' },
+      packageDivision: { classification: 'Configuration(MOD)', packageRef: 'WP-1' },
+    }, cfg);
+
+    expect(result.status).toBe(DERIVATION_STATUS.REQUIRES_CONFIRMATION);
+    expect(names(result)).toEqual([
+      'Dummy Job', 'NRC', 'Outsource', 'LLP', 'Configuration(MOD)', 'Routine',
+    ]);
+    expect(result.recommendedClassification).toBe('Dummy Job');
+    expect(result.evaluatedTiers.map((tier) => tier.tierCode)).toEqual(DERIVATION_PRIORITY);
   });
 
-  it('P3 命中给出 Outsource 与二级细分（需求 29.3）', () => {
-    const result = deriveCommercialClassification(
-      { card_type: '02' },
-      { ...noSources, outsourceEntry: { listRef: 'OS-7', subtype: 'L sub' }, partNature: true },
-      cfg,
-    );
-    expect(result.classification).toBe('Outsource');
-    expect(result.outsourceSubtype).toBe('L sub');
-    expect(result.hitTier).toBe(TIER_P3);
-  });
-
-  it('配置表顺序变化即改判定结果，不改代码（需求 29.8）', () => {
-    const sources = { ...noSources, planDummyJob: true, partNature: true };
+  it('配置重排改变候选顺序和推荐，但不丢弃后续候选', () => {
     const reordered = {
       tiers: [
-        { tier_code: 'P4_PartNature', tier_order: 1, enabled: 1 },
+        { tier_code: TIER_P4, tier_order: 1, enabled: 1 },
         { tier_code: TIER_P1, tier_order: 2, enabled: 1 },
+        { tier_code: TIER_P6, tier_order: 3, enabled: 1 },
       ],
-      cardTypeMap: defaultMap,
+      cardTypeMap: map,
     };
-    expect(deriveCommercialClassification({ card_type: '02' }, sources, cfg).classification)
-      .toBe('Dummy Job');
-    expect(deriveCommercialClassification({ card_type: '02' }, sources, reordered).classification)
-      .toBe('LLP');
-  });
-
-  it('优先级链配置缺失时不回退常量，报 PRIORITY_CONFIG_MISSING', () => {
-    const result = deriveCommercialClassification({ card_type: '02' }, noSources, undefined);
-    expect(result.status).toBe(DERIVATION_STATUS.UNDETERMINED);
-    expect(result.reasonCode).toBe(DERIVATION_REASON.PRIORITY_CONFIG_MISSING);
-  });
-});
-
-describe('P6 兜底（需求 29.2 P6、43.3、43.4）', () => {
-  it('P1–P5 未命中时依类型映射派生，02–09→Routine、10→SB/AD/SL', () => {
-    for (const cardType of ['02', '05', '09']) {
-      const r = deriveCommercialClassification({ card_type: cardType }, noSources, cfg);
-      expect(r.classification).toBe('Routine');
-      expect(r.hitTier).toBe(TIER_P6);
-      expect(r.sourceRef).toBe(`card_type:${cardType}`);
-    }
-    expect(deriveCommercialClassification({ card_type: '10' }, noSources, cfg).classification)
-      .toBe('SB/AD/SL');
-  });
-
-  it('P6 永不覆盖 P1–P5 的命中结果', () => {
     const result = deriveCommercialClassification(
-      { card_type: '10' },
-      { ...noSources, packageDivision: { classification: 'Configuration(MOD)' } },
+      { card_type: '04' },
+      { ...empty, planDummyJob: true, partNature: true },
+      reordered,
+    );
+    expect(names(result)).toEqual(['LLP', 'Dummy Job', 'Routine']);
+    expect(result.recommendedClassification).toBe('LLP');
+  });
+
+  it('08 外包事实与启用的 P6 Routine 并存，按顺序推荐 Outsource', () => {
+    const result = deriveCommercialClassification(
+      { card_type: '08' },
+      { ...empty, outsourceEntry: { listRef: 'OS-08', subtype: 'L sub' } },
       cfg,
     );
-    expect(result.hitTier).toBe(TIER_P5);
-    expect(result.classification).toBe('Configuration(MOD)');
+    expect(result).toMatchObject({
+      status: DERIVATION_STATUS.REQUIRES_CONFIRMATION,
+      recommendedClassification: 'Outsource',
+      classification: null,
+    });
+    expect(names(result)).toEqual(['Outsource', 'Routine']);
   });
 
-  it('类型 01、11 双值映射产出候选集且不自动裁决', () => {
-    for (const [cardType, expected] of [
-      ['01', ['Gear Inspection', 'Routine']],
-      ['11', ['Material Special Replacement', 'Configuration(MOD)']],
-    ]) {
-      const r = deriveCommercialClassification({ card_type: cardType }, noSources, cfg);
-      expect(r.status).toBe(DERIVATION_STATUS.REQUIRES_CONFIRMATION);
-      expect(r.classification).toBeNull();
-      expect(r.requiresManualConfirmation).toBe(true);
-      expect(r.reasonCode).toBe(DERIVATION_REASON.CARD_TYPE_MULTI_MAP);
-      expect(r.candidates.map((c) => c.classification)).toEqual(expected);
-      expect(r.candidates.every((c) => c.hitTier === TIER_P6 && c.sourceRef !== null)).toBe(true);
-    }
+  it('P6 显式停用时不参与候选聚合', () => {
+    const disabledP6 = {
+      tiers: tiers.map((tier) => ({ ...tier, enabled: tier.tier_code === TIER_P6 ? 0 : 1 })),
+      cardTypeMap: map,
+    };
+    const result = deriveCommercialClassification(
+      { card_type: '08' },
+      { ...empty, outsourceEntry: { listRef: 'OS-08', subtype: 'L sub' } },
+      disabledP6,
+    );
+    expect(result).toMatchObject({
+      status: DERIVATION_STATUS.DERIVED,
+      classification: 'Outsource',
+      outsourceSubtype: 'L sub',
+    });
+    expect(result.evaluatedTiers.some((tier) => tier.tierCode === TIER_P6)).toBe(false);
   });
 
-  it('类型未映射时无命中', () => {
-    const r = deriveCommercialClassification({ card_type: '01' }, noSources, { tiers: defaultTiers });
-    expect(r.status).toBe(DERIVATION_STATUS.UNDETERMINED);
-    expect(r.reasonCode).toBe(DERIVATION_REASON.NO_TIER_HIT);
+  it('04 的 IR 只是卡类型；LLP 事实与 P6 Routine 共同展示', () => {
+    const result = deriveCommercialClassification(
+      { card_type: '04' },
+      { ...empty, partNature: { partNo: 'P-04' } },
+      cfg,
+    );
+    expect(names(result)).toEqual(['LLP', 'Routine']);
+    expect(result.recommendedClassification).toBe('LLP');
   });
-});
 
-describe('同层多命中不自动裁决（需求 29.4）', () => {
-  it('P5 两条划分同时命中时产出候选集', () => {
-    const r = deriveCommercialClassification(
-      { card_type: '02' },
+  it('相同分类跨层/同层重复命中只保留一个候选并聚合去重证据', () => {
+    const result = deriveCommercialClassification(
+      { card_type: '08' },
       {
-        ...noSources,
+        ...empty,
         packageDivision: [
-          { classification: 'Routine', packageRef: 'WP-1' },
-          { classification: 'Material Special Replacement', packageRef: 'WP-2' },
+          { classification: 'Routine', packageRef: 'A' },
+          { classification: 'Routine', packageRef: 'A' },
+          { classification: 'Routine', packageRef: 'B' },
         ],
       },
       cfg,
     );
-    expect(r.status).toBe(DERIVATION_STATUS.REQUIRES_CONFIRMATION);
-    expect(r.classification).toBeNull();
-    expect(r.reasonCode).toBe(DERIVATION_REASON.MULTI_HIT_IN_TIER);
-    expect(r.hitTier).toBe(TIER_P5);
-    expect(r.candidates.map((c) => c.sourceRef)).toEqual(['WP-1', 'WP-2']);
+    expect(result.status).toBe(DERIVATION_STATUS.DERIVED);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].sources).toEqual([
+      { hitTier: TIER_P5, sourceRef: 'A', outsourceSubtype: null },
+      { hitTier: TIER_P5, sourceRef: 'B', outsourceSubtype: null },
+      { hitTier: TIER_P6, sourceRef: 'card_type:08', outsourceSubtype: null },
+    ]);
   });
 
-  it('同层同值重复依据不构成多命中', () => {
-    const r = deriveCommercialClassification(
-      { card_type: '02' },
-      { ...noSources, packageDivision: [{ classification: 'Routine' }, { classification: 'Routine' }] },
+  it('没有命中候选时返回 undetermined', () => {
+    const onlyFacts = { tiers: tiers.filter((tier) => tier.tier_code !== TIER_P6), cardTypeMap: map };
+    const result = deriveCommercialClassification({ card_type: '02' }, empty, onlyFacts);
+    expect(result).toMatchObject({
+      status: DERIVATION_STATUS.UNDETERMINED,
+      reasonCode: DERIVATION_REASON.NO_TIER_HIT,
+      recommendedClassification: null,
+    });
+  });
+
+  it('11 忽略 P1-P5 和配置，固定双候选、无推荐且始终待确认', () => {
+    const result = deriveCommercialClassification(
+      { card_type: '11' },
+      { ...empty, planDummyJob: true, outsourceEntry: { subtype: 'L sub' } },
+      { tiers: [], cardTypeMap: [] },
+    );
+    expect(result.status).toBe(DERIVATION_STATUS.REQUIRES_CONFIRMATION);
+    expect(names(result)).toEqual(['Material Special Replacement', 'Configuration(MOD)']);
+    expect(result.recommendedClassification).toBeNull();
+    expect(result.evaluatedTiers).toEqual([{ tierCode: TIER_P6, tierOrder: null, hitCount: 2 }]);
+  });
+});
+
+describe('商务分类人工确认', () => {
+  it('Outsource 多 subtype 保留完整候选，并按所选 subtype 绑定对应证据', () => {
+    const pending = deriveCommercialClassification(
+      { card_type: '08' },
+      {
+        ...empty,
+        outsourceEntry: [
+          { listRef: 'OS-L', subtype: 'L sub' },
+          { listRef: 'OS-P', subtype: '工序外委' },
+        ],
+      },
       cfg,
     );
-    expect(r.status).toBe(DERIVATION_STATUS.DERIVED);
-    expect(r.classification).toBe('Routine');
-  });
-});
+    const outsource = pending.candidates.find((item) => item.classification === 'Outsource');
+    expect(outsource.outsourceSubtypes).toEqual(['L sub', '工序外委']);
 
-describe('人工确认与取值封闭性（需求 29.6、29.7）', () => {
-  const pending = deriveCommercialClassification({ card_type: '11' }, noSources, cfg);
-
-  it('确认候选值后标记人工确认并记录确认人与时间', () => {
-    const { accepted, result } = confirmClassification(
-      pending, 'Configuration(MOD)', { confirmedBy: 'u-ts-1', confirmedAt: '2025-01-02T03:04:05Z' },
+    const outcome = confirmClassification(
+      pending,
+      { classification: 'Outsource', outsourceSubtype: '工序外委' },
+      { confirmedBy: 'E10001', confirmedAt: '2026-08-10T10:00:00.000Z' },
     );
-    expect(accepted).toBe(true);
-    expect(result.status).toBe(DERIVATION_STATUS.CONFIRMED);
-    expect(result.classification).toBe('Configuration(MOD)');
-    expect(result.isManualConfirmed).toBe(true);
-    expect(result.isCandidateChoice).toBe(true);
-    expect(result.hitTier).toBe(TIER_P6);
-    expect(result.confirmedBy).toBe('u-ts-1');
-    expect(result.confirmedAt).toBe('2025-01-02T03:04:05Z');
+    expect(outcome.accepted).toBe(true);
+    expect(outcome.result).toMatchObject({
+      status: DERIVATION_STATUS.CONFIRMED,
+      classification: 'Outsource',
+      outsourceSubtype: '工序外委',
+      sourceRef: 'OS-P',
+      isManualConfirmed: true,
+      confirmedBy: 'E10001',
+      confirmedAt: '2026-08-10T10:00:00.000Z',
+    });
   });
 
-  it('拒绝取值集合以外的人工指定值', () => {
-    const rejected = confirmClassification(pending, 'Whatever', { confirmedBy: 'u1' });
-    expect(rejected.accepted).toBe(false);
-    expect(rejected.reasonCode).toBe(DERIVATION_REASON.CLASSIFICATION_NOT_ALLOWED);
-    expect(rejected.result).toBeNull();
-    expect(isValidCommercialClassification('Whatever')).toBe(false);
+  it('类型 11 可人工二选一并保留候选证据', () => {
+    const pending = deriveCommercialClassification({ card_type: '11' }, empty, cfg);
+    const outcome = confirmClassification(
+      pending,
+      'Configuration(MOD)',
+      { confirmedBy: 'E10001', confirmedAt: '2026-08-10T11:00:00.000Z' },
+    );
+    expect(outcome.accepted).toBe(true);
+    expect(outcome.result).toMatchObject({
+      classification: 'Configuration(MOD)',
+      hitTier: TIER_P6,
+      sourceRef: 'card_type:11',
+      isCandidateChoice: true,
+    });
   });
-});
 
-describe('normalizeCardTypeMap', () => {
-  it('聚合同类型多值并剔除越界分类', () => {
-    const map = normalizeCardTypeMap([
-      { card_type: '01', commercial_classification: 'Gear Inspection' },
-      { card_type: '01', commercial_classification: 'Routine' },
-      { card_type: '01', commercial_classification: 'Nonsense' },
-    ]);
-    expect(map['01']).toEqual(['Gear Inspection', 'Routine']);
+  it('拒绝枚举外、枚举内非候选及不匹配 Outsource subtype', () => {
+    const pending = deriveCommercialClassification(
+      { card_type: '08' },
+      { ...empty, outsourceEntry: { subtype: 'L sub' } },
+      cfg,
+    );
+    expect(confirmClassification(pending, 'Whatever').reasonCode)
+      .toBe(DERIVATION_REASON.CLASSIFICATION_NOT_ALLOWED);
+    expect(confirmClassification(pending, 'NRC').reasonCode)
+      .toBe(DERIVATION_REASON.CLASSIFICATION_NOT_CANDIDATE);
+    expect(confirmClassification(
+      pending,
+      { classification: 'Outsource', outsourceSubtype: '工序外委' },
+    ).reasonCode).toBe(DERIVATION_REASON.OUTSOURCE_SUBTYPE_MISMATCH);
   });
-});
 
-describe('确定性（Property 23 的示例锚点）', () => {
-  it('相同输入两次调用结果逐字段相等', () => {
-    const card = { card_type: '01' };
-    const sources = { ...noSources, outsourceEntry: [{ subtype: 'L sub' }, { subtype: '工序外委' }] };
-    expect(deriveCommercialClassification(card, sources, cfg))
-      .toEqual(deriveCommercialClassification(card, sources, cfg));
+  it('分类与 Outsource subtype 值域保持封闭', () => {
+    expect(isValidCommercialClassification('Routine')).toBe(true);
+    expect(isValidCommercialClassification('IR')).toBe(false);
+    expect(isValidOutsourceSubtype('L sub')).toBe(true);
+    expect(isValidOutsourceSubtype('Other')).toBe(false);
   });
 });

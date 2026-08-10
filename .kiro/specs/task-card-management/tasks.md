@@ -179,7 +179,7 @@
   - [x]* 6.5 编写提交审核校验完备性属性测试
     - **Property 19: 提交审核校验完备性与审核记录归档**
     - **Validates: Requirements 34.1, 34.2, 34.4, 34.5, 34.6, 34.7, 34.8, 34.9, 34.10, 34.11, 46.10**
-    - 校验清单为 **(a)–(g)** 七项全通过方可进入审核中；每次被接受的审核动作使该版本审核记录数恰好 +1；升版新版本审核记录数初始为 0。注：需求 34.3 由 Property 26 覆盖，本属性不断言，`numRuns: 100`
+    - 校验清单为 **(a)–(h)** 八项全通过方可进入审核中，其中 (h) 要求最新持久化商务分类为唯一 `derived` 或人工 `confirmed`；每次被接受的审核动作使该版本审核记录数恰好 +1；升版新版本审核记录数初始为 0。注：需求 34.3 由 Property 26 覆盖，本属性不断言，`numRuns: 100`
   - [x]* 6.6 编写一编一审属性测试
     - **Property 14: 一编一审**
     - **Validates: Requirements 22.1, 22.2, 22.3**
@@ -219,11 +219,11 @@
     - 重点断言「存在未完成工序时工卡结束时间恒为空」，`numRuns: 100`
 
 - [x] 8. 实现商务分类、Stage 约束、能力清单与权限领域模块（纯函数）
-  - [x] 8.1 实现商务分类优先级链派生
-    - 在 `server/src/domain/classification.js` 实现 `deriveCommercialClassification(card, sources, priorityCfg)`：按 `priorityCfg`（**来自 `derivation_priority_config` 表，非直接遍历常量数组**）自上而下取首个命中层级
-    - P1 计划设置→Dummy Job；P2 实际发起单据→NRC；P3 实际外包清单→Outsource（+ L sub / 工序外委）；P4 零件性质→LLP；P5 工包划分→Routine / MSR / Configuration(MOD)；P6 工卡类型兜底（01→Gear Inspection、02–09→Routine、10→SB/AD/SL、11→见下），**P6 永不覆盖 P1–P5**
-    - 类型 11 且 P1–P5 未命中、或同层多命中时**不自动裁决**，产出候选集要求人工确认；每条结果携带命中层级与依据来源
-    - _Requirements: 29.1–29.8, 43.2–43.5_
+  - [x] 8.1 实现商务分类候选聚合与确认模型
+    - 在 `server/src/domain/classification.js` 实现 `deriveCommercialClassification(card, sources, priorityCfg)`：按业务方 2026-08-10 裁定的 P1→P6 顺序评估全部启用层级，聚合全部不同分类候选；同分类合并全部 `sources`，保留首次 `hitTier/sourceRef`，非类型 11 以首候选为推荐
+    - P1 计划设置→Dummy Job；P2 实际发起单据→NRC；P3 实际外包清单→Outsource（候选必须保留 L sub / 工序外委 subtype）；P4→LLP；P5→Routine / MSR / Configuration(MOD)；P6→类型映射。单候选 `derived`，多候选 `requires_confirmation`
+    - 类型 11 为已裁定特例：忽略 P1–P5，固定 MSR/MOD 双候选，`recommendedClassification=null` 且必须人工确认；确认函数校验完整候选，Outsource subtype 不匹配即拒绝
+    - _Requirements: 29.1–29.11, 43.2–43.6_
   - [x] 8.2 实现 Stage × 工卡类型约束
     - 在 `server/src/domain/stage-constraint.js` 实现 `validateStageCardType(stage, cardType, cfg)`（允许组合 ∪ 横切取值均通过）
     - 实现 **`defaultStageFor(cardType, cfg)`**（给出默认值）与 **`selectableStages(cardType, cfg)`**（= 该类型允许组合 ∪ `STAGE_CROSSCUT`）。**不实现任何将 Stage 置只读的逻辑**
@@ -237,10 +237,10 @@
     - 在 `server/src/domain/permission.js` 实现 `checkPermission(role, permissionPoint, cfg)`，`permissionPoint` 取值受 `PERMISSION_POINT` 词表约束
     - 实现 `READONLY_DERIVED_FIELDS` 常量与 `isWritableField(field)`：需求 26.1 执行相关字段、需求 27.1 Process Card 四字段、需求 30.1 工序 Operation、需求 11.3 Work Category / Estimated ManHours、需求 11.4 有效/实际工时**恒不可经本模块编制界面人工写入**，任何角色皆然
     - _Requirements: 11.3, 11.4, 20.9, 26.5, 27.3, 30.2, 47.1–47.10_
-  - [x]* 8.5 编写商务分类派生确定性属性测试
-    - **Property 23: 商务分类派生优先级确定性**
-    - **Validates: Requirements 29.1, 29.2, 29.3, 29.4, 29.5, 29.6, 29.7, 43.3, 43.4**
-    - 断言结果 = 首个命中层级；P6 永不覆盖 P1–P5；同层多命中与类型 11 产出候选集不自动裁决；每条结果记录命中层级与依据来源，`numRuns: 100`
+  - [x]* 8.5 编写商务分类候选聚合与确认属性测试
+    - **Property 23: 商务分类候选聚合、推荐与确认一致性**
+    - **Validates: Requirements 29.1–29.11, 34.1(h), 43.2–43.6**
+    - 断言：全部层级命中被聚合、同分类 sources 完整且去重、首次证据稳定、非 11 推荐为首候选、类型 11 固定双候选且推荐 null；单候选 derived、多候选 pending；确认拒绝过期 `derivationResultId`、非候选及 Outsource subtype 不匹配；pending 不清空权威值，`numRuns: 100`
   - [x]* 8.6 编写 Stage 与工卡类型约束属性测试
     - **Property 28: Stage 与工卡类型约束一致性**
     - **Validates: Requirements 46.1, 46.3, 46.4, 46.5, 46.7, 46.8, 46.9, 46.10, 46.11, 46.12, 46.13**
@@ -381,7 +381,7 @@
     - **需求 49.8 的非内容变更操作（查看/打印/导出/复制/升版/作废/发布）不经该闸门**，须显式测试确认未被误拦
     - _Requirements: 3.1, 4.1, 7.2, 7.4, 9.1–9.3, 10.3, 11.1–11.4, 12.1–12.3, 13.1–13.3, 19.1, 19.2, 26.5, 27.3, 30.2, 36.3, 45.1–45.5, 46.10, 46.11, 49.1–49.4, 49.8_
   - [x] 13.2 实现审核服务与版本取代（语句顺序强制）
-    - 实现 `submitForReview`（执行 (a)–(g) 七项校验，全通过置 UnderReview；任一失败保持 New 并返回未通过项）
+    - 实现 `submitForReview`（执行 (a)–(h) 八项校验，其中 (h) 校验最新持久化商务分类状态；全通过置 UnderReview；任一失败保持 New 并返回未通过项）
     - 实现 `approve`：单事务内**严格按「①原生效版本 → Superseded + 写 `supersede_record`；②本版本 → Effective + 写 `review_record`」顺序**执行；任一步失败整体回滚，新版本不生效且原生效版本保持生效。**在代码注释中写明顺序不可颠倒的原因（部分唯一索引立即校验）**
     - 实现 `reject`（回 New + 写 `review_record`）；审核意见为空一律拒绝；升版新版本不继承审核结果
     - _Requirements: 22.3, 34.1–34.11, 39.2, 44.1–44.3, 44.7, 44.8, 45.9, 46.10_
@@ -405,7 +405,8 @@
     - JOB 查询与呈现**一律读 `job_step_snapshot`**，不读 `process_step` 当前内容
     - _Requirements: 11.4, 31.5–31.7, 32.1–32.4, 33.1–33.8, 37.4, 37.5, 47.7, 49.6_
   - [x] 13.7 实现分类派生、能力校验与作废服务
-    - 分类派生：从 `GET /api/classification-sources` 契约聚合 P1–P5 输入，优先级顺序**读 `derivation_priority_config` 表**（非常量数组）→ `deriveCommercialClassification` → 写 `commercial_classification_result`（追加式）并同步 `task_card.commercial_classification` 为最新一条，保证权威值恒等于轨迹最新值；候选集场景返回待确认（`code:0`），人工确认时标记确认人与时间
+    - 分类派生：聚合 P1–P5 输入并按已裁定 P1→P6 顺序生成完整候选；追加写入 `commercial_classification_result` 的 `status/candidates_json/recommended_classification/evaluated_tiers_json`。仅 `derived/confirmed` 同步 `task_card` 权威值，`requires_confirmation/undetermined` 不清空既有分类
+    - 确认：只接受最新 pending 的 `derivationResultId` 和完整候选选择；Outsource 必须含候选允许的 subtype；确认后追加 confirmed 行并关联原派生行。提供 latest/history 读取，供前端按持久化状态恢复
     - 能力校验服务按需求 39.4 规则选取当前有效版本
     - 作废服务：聚合三类引用（前两类查 `job.exec_status`，第三类查在编工包引用契约端点）→ `checkVoidPrecondition` → 通过则置 Void 并经 `buildChangeRecords` 写 `void` 类型留痕（原因必填）
     - _Requirements: 29.1–29.8, 39.1–39.4, 42.1–42.5, 43.3–43.5_
@@ -486,7 +487,7 @@
     - `POST /api/task-cards`、`PUT /api/task-cards/:id`、参考文件增删、附件引用绑定；全部经 `isEditable` 闸门并写变更留痕
     - _Requirements: 3.1, 4.1, 7.2, 7.4, 9.1–9.3, 10.3, 19.1, 19.2, 36.3, 46.10, 46.11, 49.1–49.4_
   - [x] 17.3 实现审核路由
-    - `POST /api/task-cards/:id/submit-review`（返回未通过校验项清单 (a)–(g)）、`POST .../approve`、`POST .../reject`、`GET .../reviews`
+    - `POST /api/task-cards/:id/submit-review`（返回未通过校验项清单 (a)–(h)，其中 (h) 为商务分类持久状态门禁）、`POST .../approve`、`POST .../reject`、`GET .../reviews`
     - _Requirements: 22.3, 34.1–34.11, 39.2, 44.1–44.3, 44.8, 45.9, 46.10_
   - [x] 17.4 实现版本、复制、作废、批量替换与关联路由
     - `POST /api/task-cards/copy`（body: ids, numbering{prefix,suffix,startSeq,step}）、`POST /api/task-cards/revise`、`POST /api/task-cards/:id/void`（reason 必填）、`GET /api/task-cards/:id/void-precheck`（返回三类引用命中情况）、`GET /api/task-cards/:id/change-records`、`POST /api/task-cards/batch-replace`（`batch_replace` 独立权限点）
@@ -494,7 +495,7 @@
     - 空 `ids[]` 返回 `code=400` 兜底
     - _Requirements: 3.3, 3.4, 3.8, 4.3, 7.1, 7.5, 19.1–19.3, 20.1–20.10, 21.1–21.5, 38.1–38.10, 42.1–42.5, 47.9_
   - [x]* 17.5 编写主链路接口测试
-    - `POST /api/session` → `POST 新增` → `PUT 保存` → `submit-review`（**七项**校验）→ `reject`（回 New）→ `submit-review` → `approve`（一编一审 + 版本取代，断言未触发唯一索引冲突且原生效版本已置 Superseded）
+    - `POST /api/session` → `POST 新增` → `PUT 保存` → `submit-review`（**八项**校验，含 (h) 商务分类持久状态门禁）→ `reject`（回 New）→ `submit-review` → `approve`（一编一审 + 版本取代，断言未触发唯一索引冲突且原生效版本已置 Superseded）
     - 编辑态闸门链路：同一工卡在五态下分别调用全部编辑类端点，断言仅 New 通过、其余 `422` 且内容未变；再断言生效态经升版后可编辑，且生效态的打印/导出/复制/升版/作废/发布均放行
     - 留痕链路：保存 / 删除工序 / 升版 / 批量替换 / 作废各执行一次后，`GET .../change-records` 返回的记录数与类型恰与操作序列对应（Property 35 的接口侧回归）
     - _Requirements: 19.1, 19.3, 34.1, 34.4, 34.5, 42.5, 44.1, 49.1, 49.2, 49.8_
@@ -544,9 +545,10 @@
     - `PUT /api/capabilities`（QA 维护，需 `capability_write`）、`PUT /api/print-templates/:id`
     - 全部写端点声明所需权限点，越权 `403` 并写 `access_denial_log`；非法枚举值 `400`
     - _Requirements: 29.8, 39.1, 39.4, 40.1, 40.2, 43.5, 46.14, 47.8, 47.10_
-  - [x] 20.3 实现分类派生与确认路由
-    - `POST /api/task-cards/:id/classification/derive`（返回结果或候选集 + 命中层级 + 依据来源）、`POST .../classification/confirm`（标记人工确认与确认人/时间）
-    - _Requirements: 29.1–29.8, 43.3–43.5_
+  - [x] 20.3 实现分类派生、最新状态、历史与确认路由
+    - `POST /api/task-cards/:id/classification/derive` 返回 `{resultId,status,candidates,recommendedClassification}`；`GET .../classification/latest` 恢复持久化 pending；`GET .../classification/history` 返回追加式轨迹
+    - `POST .../classification/confirm` 强制 body 含 `{derivationResultId,classification,outsourceSubtype?}`，校验最新 pending、完整候选及 Outsource subtype；过期结果返回 `409`
+    - _Requirements: 29.1–29.11, 43.3–43.6_
   - [x] 20.4 实现集成读取契约路由（本地表 / mock，只读）
     - `GET /api/tpc/documents`（回填四字段）、`GET /api/ppc/process-data`（TS 只读，**无写端点**）、`GET /api/pid/:pid/scope`
     - **`GET /api/ppc/schedule?pid=&cardId=`** → `{ jobTargetDate }`，释放时写入 `job.job_target_date`；取不到值该列留空
@@ -624,12 +626,14 @@
     - `CardRelationPanel`（关联全 11 类执行单据，展示 `origin` 区分人工/自动，展示关键信息快照）、`LotLinkPanel`（类型 05 关联 Lot List）、`BomBaseTable`（Base 输出展示，标识来源与 Lot Number；Base 值取自 `GET /api/lot-lists/:ref/bases` 契约）
     - _Requirements: 21.1–21.5, 48.1–48.6, 48.8_
   - [x] 24.5 实现审核面板与变更记录
-    - `ReviewPanel`：提交审核（失败时逐项列出未通过的 (a)–(g) 校验项）、批准/驳回（审核意见必填）、按版本展示审核记录
+    - `ReviewPanel`：提交审核（失败时逐项列出 (a)–(h)；识别后端 (h) 商务分类门禁并打开确认框）；pending 或类型 11 未确认时体验层阻止，单候选自动派生后可继续提交；批准/驳回仍要求审核意见
     - 变更记录查询展示字段级前后值、变更类型与原因（对应 `buildChangeRecords` 产出）
-    - _Requirements: 19.1–19.3, 34.1–34.11_
-  - [x] 24.6 实现商务分类确认对话框
-    - `ClassificationConfirmDialog`：展示派生结果或候选集、命中层级与派生依据来源；候选集场景要求 TS 确认其一后方可提交审核
-    - _Requirements: 29.1–29.7, 43.3, 43.4_
+    - _Requirements: 19.1–19.3, 29.4, 34.1–34.11_
+  - [x] 24.6 实现商务分类确认对话框与持久状态恢复
+    - `classificationApi` 增加 latest/history；`TaskCardEditorView` 加载已有卡时读取 latest，严格按持久化 `status` 恢复 pending，不凭类型 11 猜测，且 pending 派生不清空卡当前权威分类
+    - `ClassificationConfirmDialog` 展示全部候选、非 11 推荐、每个候选首次层级与全部 sources；稳定 key 包含分类/subtype/来源，选择保留完整对象；打开时优先传入/最新 pending，必要时 derive
+    - confirm 发送 `derivationResultId + classification + outsourceSubtype(Outsource)`；确认后编辑页更新权威分类并保持既有 `derived/confirmed` 事件兼容
+    - _Requirements: 29.3–29.10, 34.1(h), 43.3–43.5_
   - [x]* 24.7 编写编制视图组件测试
     - 断言：**Stage 字段可改选且下拉含 WFD**（需求 46.12 回归防线）、IR 卡条件字段显隐、编制态不渲染执行期与 Process Card 字段栏位、JOB 上下文下该两组字段只读无写入控件、非 New 态整体只读、TPC 回填四字段、审核意见为空时批准按钮禁用、变更记录展示字段级前后值
     - _Requirements: 8.1, 8.3, 19.3, 26.2, 26.5, 27.3, 27.4, 34.7, 46.12, 49.1_
@@ -681,6 +685,16 @@
   - 逐项复核《临时设计说明》「仍待澄清」项与开发期待确认项 D-01–D-07（含 D-07 `exec_document` 结构随 SWS 编制归属裁定而定），确认全部实现为配置驱动、改配置即可调整
   - 四界面导航流（清单 → 编制 → 工序 → JOB 查看）+ 配置维护视图人工走查，视觉对照 `HAECO-Demo`
   - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 28. 客户澄清修订（2026-08-10）
+  - [x] 28.1 对齐 classification latest/history API 与派生/确认响应契约
+  - [x] 28.2 分类确认框展示全部候选、推荐、首次层级及全部来源，并完整回传 Outsource subtype
+  - [x] 28.3 编辑页按持久化 status 恢复 pending，保持待确认期间当前权威分类不变
+  - [x] 28.4 审核面板接入 (h) 门禁，pending/类型 11 未确认阻止提交，单候选自动派生继续提交
+  - [x] 28.5 更新前端组件测试并通过目标测试
+  - [x] 28.6 同步 requirements/design/tasks 与临时设计说明的 A1 已裁定口径
+  - [x] 28.7 强制人工确认携带最新 `derivationResultId`，缺失与陈旧结果分别拒绝
+  - [x] 28.8 恢复并扩展 Property 23 与 Property 19(h) 覆盖，保持 `numRuns: 100`
 
 ---
 

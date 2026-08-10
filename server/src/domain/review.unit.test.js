@@ -48,11 +48,18 @@ function goldenCtx() {
     stageConstraintCfg: {
       constraints: [{ card_type: '01', allowed_stage: 'RTN', is_auto_fill: 1 }],
     },
+    latestClassificationResult: {
+      id: 1,
+      status: 'derived',
+      classification: 'Gear Inspection',
+      candidates: [{ classification: 'Gear Inspection' }],
+      isManualConfirmed: 0,
+    },
   };
 }
 
-describe('submitReviewChecklist —— 提交审核校验清单 (a)-(g)（需求 34.1、34.2）', () => {
-  it('黄金路径：全部 7 项通过', () => {
+describe('submitReviewChecklist —— 提交审核校验清单 (a)-(h)（需求 34.1、34.2）', () => {
+  it('黄金路径：全部 8 项通过', () => {
     const result = submitReviewChecklist(goldenCard(), goldenCtx());
     expect(result.ok).toBe(true);
     expect(result.failedChecks).toEqual([]);
@@ -205,5 +212,43 @@ describe('acceptReviewAction —— 审核动作接受条件（需求 34.4-34.7�
 
   it('REVIEW_ACTIONS 恰为 approve/reject 两值', () => {
     expect(REVIEW_ACTIONS).toEqual(['approve', 'reject']);
+  });
+});
+
+describe('(h) 商务分类持久状态门禁', () => {
+  it('唯一 derived 结果允许提交', () => {
+    const result = submitReviewChecklist(goldenCard(), goldenCtx());
+    expect(result.failedChecks.some((item) => item.check === 'h')).toBe(false);
+  });
+
+  it('人工 confirmed 结果允许提交，即使原派生包含多个候选', () => {
+    const ctx = goldenCtx();
+    ctx.latestClassificationResult = {
+      id: 2,
+      status: 'confirmed',
+      classification: 'Configuration(MOD)',
+      candidates: [
+        { classification: 'Material Special Replacement' },
+        { classification: 'Configuration(MOD)' },
+      ],
+      isManualConfirmed: true,
+    };
+    const result = submitReviewChecklist(goldenCard(), ctx);
+    expect(result.failedChecks.some((item) => item.check === 'h')).toBe(false);
+  });
+
+  it.each([
+    [undefined, 'CLASSIFICATION_RESULT_MISSING'],
+    [{ status: 'undetermined', candidates: [] }, 'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED'],
+    [{ status: 'requires_confirmation', candidates: [{ classification: 'Outsource' }, { classification: 'Routine' }] }, 'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED'],
+    [{ status: 'requires_confirmation', candidates: [{ classification: 'Material Special Replacement' }, { classification: 'Configuration(MOD)' }] }, 'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED'],
+    [{ status: 'derived', classification: 'Routine', candidates: [{ classification: 'Routine' }, { classification: 'LLP' }] }, 'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED'],
+    [{ status: 'confirmed', classification: 'Routine', candidates: [{ classification: 'Routine' }], isManualConfirmed: false }, 'COMMERCIAL_CLASSIFICATION_CONFIRMATION_REQUIRED'],
+  ])('缺失、未定、待确认或不完整结果均 fail closed', (latestClassificationResult, rejection) => {
+    const ctx = goldenCtx();
+    ctx.latestClassificationResult = latestClassificationResult;
+    const result = submitReviewChecklist(goldenCard(), ctx);
+    expect(result.ok).toBe(false);
+    expect(result.failedChecks.find((item) => item.check === 'h')?.rejection).toBe(rejection);
   });
 });

@@ -365,7 +365,12 @@ describe('Task 17.5 main-chain HTTP regression', () => {
       ...overrides,
     }).expect(200);
     expectOk(response);
-    return response.body.data;
+    const card = response.body.data;
+    const derivation = await auth('post', `/api/task-cards/${card.id}/classification/derive`, token).send({}).expect(200);
+    await auth('post', `/api/task-cards/${card.id}/classification/confirm`, token).send({
+      classification: 'Gear Inspection', derivationResultId: derivation.body.data.resultId,
+    }).expect(200);
+    return card;
   }
 
   async function addStepAndSignature(cardId, operatorId = 'E10001') {
@@ -539,6 +544,10 @@ describe('Task 17.5 main-chain HTTP regression', () => {
     }).expect(200);
     const candidate = revisionResponse.body.data[0];
     expect(candidate).toMatchObject({ taskNo: created.taskNo, revision: 2, status: 'New' });
+    const candidateDerivation = await auth('post', `/api/task-cards/${candidate.id}/classification/derive`, engineer).send({}).expect(200);
+    await auth('post', `/api/task-cards/${candidate.id}/classification/confirm`, engineer).send({
+      classification: 'Gear Inspection', derivationResultId: candidateDerivation.body.data.resultId,
+    }).expect(200);
 
     await auth('put', `/api/task-cards/${candidate.id}`, engineer)
       .send({ title: 'Main-chain revision 2', reason: '修订生效版本' })
@@ -665,4 +674,24 @@ describe('Task 17.5 main-chain HTTP regression', () => {
     'runs create/save/seven-check review/reject/resubmit/approve and demotes the incumbent first',
     runMainChain,
   );
+});
+
+
+describe('商务分类普通写接口防绕过', () => {
+  it('POST/PUT 显式拒绝 commercialClassification 与 outsourceSubtype', async () => {
+    const engineer = await login('E10001');
+    const create = await auth('post', '/api/task-cards', engineer).send({
+      taskNo: 'CLS-BYPASS-CREATE', title: 'bypass', cardType: '04',
+      commercialClassification: 'Routine',
+    }).expect(400);
+    expect(create.body.data.rejection).toBe('COMMERCIAL_CLASSIFICATION_DIRECT_WRITE_FORBIDDEN');
+
+    const id = cardId('TC-2026-0002');
+    const before = getDb().prepare('SELECT commercial_classification, outsource_subtype FROM task_card WHERE id = ?').get(id);
+    const update = await auth('put', `/api/task-cards/${id}`, engineer).send({
+      commercialClassification: 'Outsource', outsourceSubtype: 'L sub', reason: 'bypass',
+    }).expect(400);
+    expect(update.body.data.rejection).toBe('COMMERCIAL_CLASSIFICATION_DIRECT_WRITE_FORBIDDEN');
+    expect(getDb().prepare('SELECT commercial_classification, outsource_subtype FROM task_card WHERE id = ?').get(id)).toEqual(before);
+  });
 });

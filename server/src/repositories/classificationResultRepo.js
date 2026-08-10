@@ -7,7 +7,8 @@
  * 这不是遗漏，而是「追加式（append-only）审计轨迹」这一表定位的仓储层落实（对应
  * `jobStepSnapshotRepo.js` 的同类约定）：每次派生或人工确认都**追加**一行，不更新既有行，
  * 同一工卡因此可有多行历史。`task_card.commercial_classification` 是**另行同步**的当前
- * 权威值，其值恒等于本表最新一行（按追加顺序，即「最后一行」）的 `classification`——
+ * 权威值。仅 `derived` / `confirmed` 最新行会同步该权威值；`requires_confirmation` /
+ * `undetermined` 最新行的 `classification` 可为空，但不得清空工卡上既有权威值。
  * 该同步是服务层职责（写工卡表 + 写本表须在同一事务内完成），本仓储只管追加与只读查询，
  * 不做同步、不做业务裁决。
  *
@@ -23,21 +24,41 @@ import { insertRow, pickColumns, rowToCamel, toFlag, toIntOrNull } from './case-
 /** `commercial_classification_result` 除 `id` 外的全部列（snake_case），供 {@link pickColumns} 白名单使用。 */
 export const CLASSIFICATION_RESULT_COLUMNS = Object.freeze([
   'card_id', 'classification', 'hit_tier', 'source_ref',
+  'status', 'candidates_json', 'recommended_classification', 'outsource_subtype',
+  'reason_code', 'evaluated_tiers_json', 'derivation_result_id',
   'is_manual_confirmed', 'confirmed_by', 'confirmed_at', 'created_at',
 ]);
+
+const JSON_COLUMNS = Object.freeze(['candidates_json', 'evaluated_tiers_json']);
 
 function toWriteRow(input) {
   const row = pickColumns(input, CLASSIFICATION_RESULT_COLUMNS);
   if (row.card_id !== undefined) row.card_id = toIntOrNull(row.card_id);
+  if (row.derivation_result_id !== undefined) row.derivation_result_id = toIntOrNull(row.derivation_result_id);
   if (row.is_manual_confirmed !== undefined) row.is_manual_confirmed = toFlag(row.is_manual_confirmed);
+  for (const column of JSON_COLUMNS) {
+    if (row[column] !== undefined && row[column] !== null && typeof row[column] !== 'string') {
+      row[column] = JSON.stringify(row[column]);
+    }
+  }
   return row;
+}
+
+function parseJson(value) {
+  if (value === null || value === undefined || typeof value !== 'string') return value ?? null;
+  try { return JSON.parse(value); } catch { return null; }
 }
 
 function toResult(row) {
   const camel = rowToCamel(row);
   if (camel === null) return null;
   if (camel.cardId !== undefined) camel.cardId = toIntOrNull(camel.cardId);
+  if (camel.derivationResultId !== undefined) camel.derivationResultId = toIntOrNull(camel.derivationResultId);
   if (camel.isManualConfirmed !== undefined) camel.isManualConfirmed = toIntOrNull(camel.isManualConfirmed);
+  if (camel.candidatesJson !== undefined) camel.candidates = parseJson(camel.candidatesJson);
+  if (camel.evaluatedTiersJson !== undefined) camel.evaluatedTiers = parseJson(camel.evaluatedTiersJson);
+  delete camel.candidatesJson;
+  delete camel.evaluatedTiersJson;
   return camel;
 }
 

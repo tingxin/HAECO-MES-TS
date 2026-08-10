@@ -492,6 +492,13 @@ CREATE TABLE IF NOT EXISTS commercial_classification_result (
                                                                                -- 派生结果，待人工确认时为 NULL（需求 29.1、29.6）
   hit_tier            TEXT    {{CHECK:derivationPriority:hit_tier}},           -- 命中层级 P1–P6（需求 29.5）
   source_ref          TEXT,                                                    -- 判定依据来源（需求 29.5）
+  status              TEXT,                                                    -- derived/requires_confirmation/undetermined/confirmed
+  candidates_json     TEXT,                                                    -- 完整候选快照（JSON）
+  recommended_classification TEXT {{CHECK:commercialClassification:recommended_classification}},
+  outsource_subtype   TEXT    {{CHECK:outsourceSubtype:outsource_subtype}},
+  reason_code         TEXT,
+  evaluated_tiers_json TEXT,                                                   -- 已求值层级快照（JSON）
+  derivation_result_id INTEGER REFERENCES commercial_classification_result(id),-- 确认行绑定的待确认派生行
   is_manual_confirmed INTEGER NOT NULL DEFAULT 0
                               CHECK (is_manual_confirmed IN (0,1)),            -- 是否经人工确认（需求 29.6）
   confirmed_by        TEXT,                                                    -- 人工确认人，自动派生时为 NULL

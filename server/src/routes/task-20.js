@@ -120,6 +120,14 @@ export function createTask20Router({
     configService.updatePrintTemplateAuthorized(req.params.id, req.body),
   ))));
 
+  router.get('/task-cards/:id/classification/latest', ...allowed('card_read', route((req, res) => sendOk(
+    res,
+    classificationService.getLatestClassification(req.params.id),
+  ))));
+  router.get('/task-cards/:id/classification/history', ...allowed('card_read', route((req, res) => sendOk(
+    res,
+    classificationService.listClassificationHistory(req.params.id),
+  ))));
   router.post('/task-cards/:id/classification/derive', ...allowed('card_edit', route((req, res) => sendOk(
     res,
     classificationService.deriveClassification(req.params.id),
@@ -128,6 +136,7 @@ export function createTask20Router({
     const choice = req.body?.choice ?? (req.body?.classification === undefined ? req.body : {
       classification: req.body.classification,
       outsourceSubtype: req.body.outsourceSubtype,
+      derivationResultId: req.body.derivationResultId,
     });
     return sendOk(res, classificationService.confirmClassification(req.params.id, choice, {
       ...req.user,

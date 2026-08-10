@@ -18,6 +18,7 @@ import * as ppcScheduleRepo from './ppcScheduleRepo.js';
 import * as processDataRepo from './processDataRepo.js';
 import * as processStepRepo from './processStepRepo.js';
 import * as taskCardRepo from './taskCardRepo.js';
+import * as classificationResultRepo from './classificationResultRepo.js';
 
 beforeEach(() => {
   resetDb(':memory:');
@@ -183,5 +184,23 @@ describe('集成仓储只读导出契约', () => {
     const forbidden = /^(create|insert|update|upsert|save|remove|delete|replace|reorder)/i;
     expect(Object.keys(repository).filter((key) => key !== 'default' && forbidden.test(key))).toEqual([]);
     expect(Object.keys(repository.default).filter((key) => forbidden.test(key))).toEqual([]);
+  });
+});
+
+
+describe('classificationResultRepo 快照 JSON 往返', () => {
+  it('完整序列化并解析候选与已求值层级', () => {
+    const candidates = [{ classification: 'Outsource', hitTier: 'P3_OutsourceList', sourceRef: 'OS-1', outsourceSubtypes: ['L sub'], sources: [{ hitTier: 'P3_OutsourceList', sourceRef: 'OS-1', outsourceSubtype: 'L sub' }] }, { classification: 'Routine', hitTier: 'P6_CardTypeFallback', sourceRef: 'card_type:08', sources: [] }];
+    const evaluatedTiers = [{ tierCode: 'P3_OutsourceList', tierOrder: 3, hitCount: 1 }, { tierCode: 'P6_CardTypeFallback', tierOrder: 6, hitCount: 1 }];
+    const id = classificationResultRepo.create({
+      cardId: seededCardId(), status: 'requires_confirmation', classification: null,
+      candidatesJson: candidates, recommendedClassification: 'Outsource', outsourceSubtype: null,
+      reasonCode: 'MULTIPLE_CANDIDATES', evaluatedTiersJson: evaluatedTiers,
+      derivationResultId: null, isManualConfirmed: false,
+    });
+    expect(classificationResultRepo.findById(id)).toMatchObject({ candidates, evaluatedTiers, recommendedClassification: 'Outsource' });
+    const raw = getDb().prepare('SELECT candidates_json, evaluated_tiers_json FROM commercial_classification_result WHERE id = ?').get(id);
+    expect(JSON.parse(raw.candidates_json)).toEqual(candidates);
+    expect(JSON.parse(raw.evaluated_tiers_json)).toEqual(evaluatedTiers);
   });
 });

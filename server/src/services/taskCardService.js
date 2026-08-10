@@ -146,6 +146,19 @@ function assertEditable(card, operation) {
   throw new ServiceError(CODE.UNPROCESSABLE, message, { status, operation });
 }
 
+function assertClassificationNotDirectlyWritten(input) {
+  if (input === null || typeof input !== 'object') return;
+  const forbidden = ['commercialClassification', 'commercial_classification', 'outsourceSubtype', 'outsource_subtype'];
+  const fields = forbidden.filter((field) => Object.prototype.hasOwnProperty.call(input, field));
+  if (fields.length > 0) {
+    throw new ServiceError(
+      CODE.VALIDATION,
+      '商务分类及 Outsource subtype 只能通过分类派生/确认接口写入',
+      { rejection: 'COMMERCIAL_CLASSIFICATION_DIRECT_WRITE_FORBIDDEN', fields },
+    );
+  }
+}
+
 /**
  * 将入参对象过滤为 `columns`（snake_case 列名集合）中登记的字段，返回 camelCase 键的对象；
  * 入参可为 camelCase 或 snake_case 写法，`undefined` 视为未提供（跳过）。
@@ -272,6 +285,7 @@ function assertChangeRecordOk(diff) {
  *   `(taskNo, revision)` 已存在（409）
  */
 export function createCard(input, ctx) {
+  assertClassificationNotDirectlyWritten(input);
   const operatorId = operatorIdOf(ctx);
   const source = input === null || typeof input !== 'object' ? {} : input;
 
@@ -345,6 +359,7 @@ export function createCard(input, ctx) {
  *   Stage×类型组合非法（400）、变更原因为空（400）
  */
 export function updateCard(id, patch, ctx, reason) {
+  assertClassificationNotDirectlyWritten(patch);
   const before = loadCardOrThrow(id);
   assertEditable(before, 'cardSave');
   const operatorId = operatorIdOf(ctx);

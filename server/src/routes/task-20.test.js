@@ -120,13 +120,20 @@ describe('Section 20 configuration routes', () => {
     expect(getDb().prepare("SELECT COUNT(*) AS count FROM access_denial_log WHERE staff_no = 'E60001' AND permission_point = 'config_write'").get().count).toBe(1);
   });
 
-  it('changes classification result when tier_order changes and persists manual confirmation', async () => {
+  it('persists complete pending snapshots, rejects stale confirmation, preserves authority, and serves latest/history', async () => {
     const engineer = await login('E10001');
     const manager = await login('E20001');
-    const id = cardId('TC-2026-0001');
+    const id = cardId('TC-2026-0002');
+    getDb().prepare("UPDATE task_card SET commercial_classification = 'Routine' WHERE id = ?").run(id);
+    getDb().prepare(`INSERT INTO classification_source
+      (card_id, plan_dummy_job, nrc_originating_doc)
+      VALUES (?, ?, ?)`)
+      .run(id, JSON.stringify({ isDummyJob: true, planRef: 'PLAN-04' }), JSON.stringify({ docNo: 'NRC-04' }));
 
     const first = await auth('post', `/api/task-cards/${id}/classification/derive`, engineer).send({}).expect(200);
-    expect(first.body.data).toMatchObject({ classification: 'Dummy Job', hitTier: 'P1_PlanSetting' });
+    expect(first.body.data).toMatchObject({ status: 'requires_confirmation', recommendedClassification: 'Dummy Job' });
+    expect(first.body.data.candidates.map((item) => item.classification)).toEqual(['Dummy Job', 'NRC', 'Routine']);
+    expect(getDb().prepare('SELECT commercial_classification FROM task_card WHERE id = ?').get(id).commercial_classification).toBe('Routine');
 
     const priority = (await auth('get', '/api/derivation-priority', manager).expect(200)).body.data.all;
     const reordered = priority.map((row) => ({
@@ -134,16 +141,23 @@ describe('Section 20 configuration routes', () => {
       tierOrder: row.tierCode === 'P1_PlanSetting' ? 2 : row.tierCode === 'P2_OriginatingDoc' ? 1 : row.tierOrder,
     }));
     await auth('put', '/api/derivation-priority', manager).send({ tiers: reordered }).expect(200);
-
     const second = await auth('post', `/api/task-cards/${id}/classification/derive`, engineer).send({}).expect(200);
-    expect(second.body.data).toMatchObject({ classification: 'NRC', hitTier: 'P2_OriginatingDoc' });
+    expect(second.body.data.recommendedClassification).toBe('NRC');
 
+    const unbound = await auth('post', `/api/task-cards/${id}/classification/confirm`, engineer)
+      .send({ classification: 'NRC' }).expect(400);
+    expect(unbound.body.data.rejection).toBe('DERIVATION_RESULT_REQUIRED');
+    const stale = await auth('post', `/api/task-cards/${id}/classification/confirm`, engineer)
+      .send({ classification: 'NRC', derivationResultId: first.body.data.resultId }).expect(409);
+    expect(stale.body.data.rejection).toBe('STALE_DERIVATION_RESULT');
     const confirmed = await auth('post', `/api/task-cards/${id}/classification/confirm`, engineer)
-      .send({ classification: 'NRC' })
-      .expect(200);
-    expect(confirmed.body.data).toMatchObject({ classification: 'NRC', isManualConfirmed: true, confirmedBy: 'E10001' });
-    const row = getDb().prepare('SELECT * FROM commercial_classification_result WHERE id = ?').get(confirmed.body.data.resultId);
-    expect(row).toMatchObject({ is_manual_confirmed: 1, confirmed_by: 'E10001' });
+      .send({ classification: 'NRC', derivationResultId: second.body.data.resultId }).expect(200);
+    expect(confirmed.body.data).toMatchObject({ classification: 'NRC', derivationResultId: second.body.data.resultId, isManualConfirmed: true });
+
+    const latest = await auth('get', `/api/task-cards/${id}/classification/latest`, engineer).expect(200);
+    const history = await auth('get', `/api/task-cards/${id}/classification/history`, engineer).expect(200);
+    expect(latest.body.data).toMatchObject({ status: 'confirmed', classification: 'NRC', candidates: expect.any(Array) });
+    expect(history.body.data).toHaveLength(3);
   });
 });
 describe('Section 20 read-only integration contracts', () => {

@@ -9,6 +9,7 @@ import processStepRepo from '../repositories/processStepRepo.js';
 import captureItemRepo from '../repositories/captureItemRepo.js';
 import componentRepo from '../repositories/componentRepo.js';
 import signatureRequirementRepo from '../repositories/signatureRequirementRepo.js';
+import { deriveClassification } from './classificationService.js';
 import { getJobStepContent } from './executionService.js';
 import { getPrintModel } from './printService.js';
 import { release } from './releaseService.js';
@@ -103,7 +104,7 @@ function buildEffectiveSource(taskToken) {
       stage: 'RTN',
       skill: 'GR',
       ctrlCode: 'IS',
-      cardType: '01',
+      cardType: '02',
     },
     AUTHOR,
   );
@@ -172,6 +173,9 @@ function buildEffectiveSource(taskToken) {
       AUTHOR,
     );
   }
+
+  const classification = deriveClassification(source.id);
+  expect(classification).toMatchObject({ status: 'derived', classification: 'Routine' });
 
   const underReview = submitForReview(source.id, {
     ...AUTHOR,

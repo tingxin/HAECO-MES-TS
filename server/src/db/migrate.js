@@ -32,7 +32,33 @@ import { applySchema } from './schema.js';
 export function migrate(connection) {
   const conn = connection ?? getDb();
   applySchema(conn);
+  ensureCommercialClassificationResultColumns(conn);
   return conn;
+}
+
+const CLASSIFICATION_RESULT_COMPAT_COLUMNS = Object.freeze([
+  ['status', 'TEXT'],
+  ['candidates_json', 'TEXT'],
+  ['recommended_classification', 'TEXT'],
+  ['outsource_subtype', 'TEXT'],
+  ['reason_code', 'TEXT'],
+  ['evaluated_tiers_json', 'TEXT'],
+  ['derivation_result_id', 'INTEGER REFERENCES commercial_classification_result(id)'],
+]);
+
+/**
+ * `CREATE TABLE IF NOT EXISTS` 无法扩展旧表，故以 PRAGMA 探测后逐列补齐。
+ * ALTER 只新增可空列，不重建表、不复制数据，既幂等也保留全部历史行。
+ */
+function ensureCommercialClassificationResultColumns(connection) {
+  const existing = new Set(
+    connection.prepare('PRAGMA table_info(commercial_classification_result)').all().map((row) => row.name),
+  );
+  for (const [name, definition] of CLASSIFICATION_RESULT_COMPAT_COLUMNS) {
+    if (!existing.has(name)) {
+      connection.exec(`ALTER TABLE commercial_classification_result ADD COLUMN ${name} ${definition}`);
+    }
+  }
 }
 
 /** 列出库中已建立的表名（升序，排除 sqlite_ 内部表） */

@@ -77,6 +77,7 @@ import * as stageConstraintRepo from '../repositories/stageConstraintRepo.js';
 import * as relationRepo from '../repositories/relationRepo.js';
 import * as execDocTypeRepo from '../repositories/execDocTypeRepo.js';
 import * as systemParameterRepo from '../repositories/systemParameterRepo.js';
+import * as classificationResultRepo from '../repositories/classificationResultRepo.js';
 
 /**
  * 拒绝原因码——挂在对应 `ServiceError.data.rejection` 上，供调用方/测试区分具体拒绝场景，
@@ -87,7 +88,7 @@ export const REVIEW_REJECTION = Object.freeze({
   CARD_NOT_FOUND: 'CARD_NOT_FOUND',
   /** 提交审核时工卡状态不为「新增(New)」（不允许 New→UnderReview 迁移） → `CODE.UNPROCESSABLE`（422） */
   NOT_NEW: 'NOT_NEW',
-  /** 提交审核校验清单 (a)–(g) 存在未通过项（需求 34.1、34.2） → `CODE.VALIDATION`（400） */
+  /** 提交审核校验清单 (a)–(h) 存在未通过项（需求 34.1、34.2） → `CODE.VALIDATION`（400） */
   CHECKLIST_FAILED: 'CHECKLIST_FAILED',
   /** 批准/驳回时工卡状态不为「审核中(UnderReview)」（需求 34.10） → `CODE.UNPROCESSABLE`（422） */
   NOT_UNDER_REVIEW: 'NOT_UNDER_REVIEW',
@@ -189,7 +190,8 @@ function nowIso() {
  * - (d) 能力清单：`capability_list` 全表；
  * - (e) 变更原因：调用方经 `ctx.changeReason` / `ctx.reason` 传入的本次提交原因；
  * - (f) 签署项配置：本卡关联单据 + `exec_doc_type` 签署要求配置 + 工序签署项（嵌套挂载）；
- * - (g) Stage×工卡类型组合：`stage_card_type_constraint` + `stage_crosscut`。
+ * - (g) Stage×工卡类型组合：`stage_card_type_constraint` + `stage_crosscut`；
+ * - (h) 商务分类确认：`commercial_classification_result` 最新持久化结果。
  *
  * @param {object} card 工卡对象
  * @param {unknown} changeReason 本次提交审核的变更原因
@@ -215,12 +217,13 @@ function buildSubmitReviewCtx(card, changeReason) {
       constraints: stageConstraintRepo.list(),
       crosscut: stageConstraintRepo.listCrosscut(),
     },
+    latestClassificationResult: classificationResultRepo.findLatestByCardId(card.id),
   };
 }
 
 /**
  * 提交审核（需求 34.1、34.2）：TS_Engineer 对状态为「新增(New)」的工卡依次执行完整校验
- * 清单 (a)–(g)（查重 / 枚举 / 必填 / 能力清单 / 变更原因 / 签署项配置 / Stage×工卡类型组合），
+ * 清单 (a)–(h)（既有 (a)–(g) + (h) 最新持久化商务分类唯一派生或已人工确认），
  * 全部通过方将工卡状态置为「审核中(UnderReview)」；任一未通过则**保持「新增」**并返回全部
  * 未通过项（不止首个）。
  *

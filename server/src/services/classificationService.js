@@ -24,11 +24,10 @@
  *
  * `task_card.commercial_classification`（+ `outsource_subtype`）是**当前权威值**，
  * `commercial_classification_result` 是**追加式审计轨迹**（见 `classificationResultRepo.js`
- * 模块头注）。本服务的每次写操作（{@link deriveClassification} / {@link confirmClassification}）
- * 都在**同一事务**内「追加一行审计记录」+「同步工卡权威值为该行取值」，保证
- * `task_card.commercial_classification` 恒等于该工卡审计轨迹最新一行的 `classification`
- * ——即使该值为 `null`（候选集场景，待人工确认，需求 29.4）。仓储层本身不做这层同步
- * （其模块头注明确「本仓储只管追加与只读查询，不做同步」），同步是本服务层唯一职责。
+ * 模块头注）。每次派生均追加完整状态、候选与证据快照；仅唯一 `derived` 结果会在同一事务中
+ * 同步工卡权威值。`requires_confirmation` / `undetermined` 只追加审计行，绝不以 `null` 覆盖
+ * 已确认权威值。人工确认则在同一事务中追加 `confirmed` 行并同步选定分类与 Outsource subtype。
+ * 仓储层本身不做同步，是否同步由本服务按结果状态唯一决定。
  *
  * ## 候选集场景不是错误（需求 29.4、29.6，`code:0` 风格）
  *
@@ -78,6 +77,16 @@ export const CLASSIFICATION_REJECTION = Object.freeze({
   NO_DERIVATION_TO_CONFIRM: 'NO_DERIVATION_TO_CONFIRM',
   /** 选定分类越出取值集合（需求 29.7，`domain/classification.js` 的 `CLASSIFICATION_NOT_ALLOWED`） → `CODE.VALIDATION`（400） */
   CLASSIFICATION_NOT_ALLOWED: 'CLASSIFICATION_NOT_ALLOWED',
+  /** 枚举内但不属于当前持久化候选。 */
+  CLASSIFICATION_NOT_CANDIDATE: 'CLASSIFICATION_NOT_CANDIDATE',
+  /** Outsource 细分缺失、非法或不属于当前候选证据。 */
+  OUTSOURCE_SUBTYPE_MISMATCH: 'OUTSOURCE_SUBTYPE_MISMATCH',
+  /** 最新结果不是待确认派生，不能确认。 */
+  NO_PENDING_DERIVATION: 'NO_PENDING_DERIVATION',
+  /** 调用方未绑定待确认派生结果。 */
+  DERIVATION_RESULT_REQUIRED: 'DERIVATION_RESULT_REQUIRED',
+  /** 调用方绑定的派生结果不是最新待确认结果。 */
+  STALE_DERIVATION_RESULT: 'STALE_DERIVATION_RESULT',
 });
 
 const REJECTION_MESSAGES = Object.freeze({
@@ -85,6 +94,11 @@ const REJECTION_MESSAGES = Object.freeze({
   [CLASSIFICATION_REJECTION.CONFIRMER_REQUIRED]: '缺少确认人标识（ctx.confirmedBy），无法记录人工确认',
   [CLASSIFICATION_REJECTION.NO_DERIVATION_TO_CONFIRM]: '该工卡尚无商务分类派生结果，请先执行派生',
   [CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_ALLOWED]: '选定的商务分类取值不属于预定义取值集',
+  [CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_CANDIDATE]: '选定的商务分类不属于当前待确认候选集',
+  [CLASSIFICATION_REJECTION.OUTSOURCE_SUBTYPE_MISMATCH]: 'Outsource subtype 缺失或不属于当前候选',
+  [CLASSIFICATION_REJECTION.NO_PENDING_DERIVATION]: '最新商务分类结果不是待确认派生，请重新派生',
+  [CLASSIFICATION_REJECTION.DERIVATION_RESULT_REQUIRED]: '缺少 derivationResultId，无法绑定当前待确认派生结果',
+  [CLASSIFICATION_REJECTION.STALE_DERIVATION_RESULT]: '派生结果已过期，请按最新待确认结果确认',
 });
 
 /** 拒绝原因码 → `ServiceError.code`（`lib/response.js` 的 `CODE`）。 */
@@ -93,6 +107,11 @@ const REJECTION_CODE = Object.freeze({
   [CLASSIFICATION_REJECTION.CONFIRMER_REQUIRED]: CODE.VALIDATION,
   [CLASSIFICATION_REJECTION.NO_DERIVATION_TO_CONFIRM]: CODE.NOT_FOUND,
   [CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_ALLOWED]: CODE.VALIDATION,
+  [CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_CANDIDATE]: CODE.VALIDATION,
+  [CLASSIFICATION_REJECTION.OUTSOURCE_SUBTYPE_MISMATCH]: CODE.VALIDATION,
+  [CLASSIFICATION_REJECTION.NO_PENDING_DERIVATION]: CODE.UNPROCESSABLE,
+  [CLASSIFICATION_REJECTION.DERIVATION_RESULT_REQUIRED]: CODE.VALIDATION,
+  [CLASSIFICATION_REJECTION.STALE_DERIVATION_RESULT]: CODE.CONFLICT,
 });
 
 function throwRejection(rejection, message, data) {
@@ -127,22 +146,31 @@ function withTransaction(fn) {
  *   confirmedAt: string|null}} entry
  * @returns {{id: number|bigint}}
  */
-function appendAndSync(cardId, entry) {
+function appendAndSync(cardId, entry, syncAuthority) {
   return withTransaction(() => {
     const id = classificationResultRepo.create({
       cardId,
       classification: entry.classification,
       hitTier: entry.hitTier,
       sourceRef: entry.sourceRef,
+      status: entry.status,
+      candidatesJson: entry.candidates,
+      recommendedClassification: entry.recommendedClassification,
+      outsourceSubtype: entry.outsourceSubtype,
+      reasonCode: entry.reasonCode,
+      evaluatedTiersJson: entry.evaluatedTiers,
+      derivationResultId: entry.derivationResultId,
       isManualConfirmed: entry.isManualConfirmed,
       confirmedBy: entry.confirmedBy,
       confirmedAt: entry.confirmedAt,
       createdAt: nowIso(),
     });
-    taskCardRepo.update(cardId, {
-      commercialClassification: entry.classification,
-      outsourceSubtype: entry.outsourceSubtype,
-    });
+    if (syncAuthority) {
+      taskCardRepo.update(cardId, {
+        commercialClassification: entry.classification,
+        outsourceSubtype: entry.outsourceSubtype,
+      });
+    }
     return { id };
   });
 }
@@ -157,8 +185,8 @@ function appendAndSync(cardId, entry) {
  * / `outsource_subtype`（同一事务）。
  *
  * 候选集场景（`status: 'requires_confirmation'`）与全未命中（`'undetermined'`）均为
- * **正常返回值**，不 `throw`——此时 `classification` 为 `null`，追加行与工卡权威值同步为
- * `null`，等待 {@link confirmClassification} 补齐。
+ * **正常返回值**，不 `throw`。两者都会持久化完整结果快照，但不会同步 `null` 到工卡，
+ * 因而不会覆盖已有的人工确认权威分类；仅唯一 `derived` 结果会自动同步权威值。
  *
  * @param {number|string} cardId 工卡主键
  * @param {object} sources P1–P5 判定源聚合，形状同 `GET /api/classification-sources` 的
@@ -177,31 +205,32 @@ export function deriveClassification(cardId, sources) {
   const derivation = deriveClassificationDomain(card, resolvedSources ?? {}, priorityCfg);
 
   const { id } = appendAndSync(cardId, {
+    status: derivation.status,
     classification: derivation.classification,
+    recommendedClassification: derivation.recommendedClassification,
     outsourceSubtype: derivation.outsourceSubtype,
     hitTier: derivation.hitTier,
     sourceRef: derivation.sourceRef,
+    candidates: derivation.candidates,
+    reasonCode: derivation.reasonCode,
+    evaluatedTiers: derivation.evaluatedTiers,
+    derivationResultId: null,
     isManualConfirmed: false,
     confirmedBy: null,
     confirmedAt: null,
-  });
+  }, derivation.status === 'derived');
 
   return { ...derivation, cardId, resultId: id };
 }
 
 /**
- * 人工确认 / 指定商务分类（需求 29.3、29.4、29.6、29.7）——供候选集场景（同层多命中、
- * 类型 11 双值映射）或人工另行指定时调用。
+ * 人工确认商务分类（需求 29.3、29.4、29.6、29.7）——仅接受最新
+ * `requires_confirmation` 审计行中的完整候选选择。
  *
- * 取该工卡**最新**一条派生结果（{@link deriveClassification} 或此前的确认记录）作为
- * `domain/classification.js` 的 `confirmClassification` 的 `derivation` 入参：审计表本身
- * 不持久化候选集明细（`commercial_classification_result` 无 `candidates` 列，只有
- * `classification`/`hit_tier`/`source_ref`），故 `choice` 若显式携带 `outsourceSubtype`
- * 由调用方（通常即前端就地回传派生接口给出的候选值）负责补齐，而非依赖本服务从历史候选集
- * 中重新匹配——这与 `confirmClassification` 纯函数「候选缺失时按 `derivation.hitTier` /
- * `sourceRef` 兜底、`outsourceSubtype` 以显式入参优先」的既有兜底语义一致。
- *
- * 通过后追加一行 `is_manual_confirmed = true` 的审计记录并同步工卡权威值（同一事务）。
+ * 服务从 `commercial_classification_result` 读取已持久化的候选 JSON、推荐、证据与层级快照，
+ * 拒绝枚举外值、枚举内非候选、Outsource subtype 不匹配以及调用方绑定的陈旧派生结果。
+ * 通过后追加一行 `status='confirmed'`、`is_manual_confirmed=true` 的审计记录，关联原派生行，
+ * 并在同一事务内同步工卡权威分类。
  *
  * @param {number|string} cardId 工卡主键
  * @param {string|{classification: string, outsourceSubtype?: string}} choice 选定分类
@@ -217,6 +246,28 @@ export function confirmClassification(cardId, choice, ctx) {
 
   const latest = classificationResultRepo.findLatestByCardId(cardId);
   if (latest === null) throwRejection(CLASSIFICATION_REJECTION.NO_DERIVATION_TO_CONFIRM);
+  if (latest.status !== 'requires_confirmation') {
+    throwRejection(CLASSIFICATION_REJECTION.NO_PENDING_DERIVATION, undefined, {
+      latestResultId: latest.id,
+      latestStatus: latest.status,
+    });
+  }
+
+  const requestedResultId = choice && typeof choice === 'object'
+    ? choice.derivationResultId ?? choice.derivation_result_id
+    : undefined;
+  if (requestedResultId === undefined || requestedResultId === null
+    || String(requestedResultId).trim() === '') {
+    throwRejection(CLASSIFICATION_REJECTION.DERIVATION_RESULT_REQUIRED, undefined, {
+      latestResultId: latest.id,
+    });
+  }
+  if (String(requestedResultId) !== String(latest.id)) {
+    throwRejection(CLASSIFICATION_REJECTION.STALE_DERIVATION_RESULT, undefined, {
+      derivationResultId: requestedResultId,
+      latestResultId: latest.id,
+    });
+  }
 
   const confirmedByRaw = ctx && typeof ctx === 'object'
     ? ctx.confirmedBy ?? ctx.staffNo ?? ctx.operatorId
@@ -227,32 +278,37 @@ export function confirmClassification(cardId, choice, ctx) {
   const confirmedBy = String(confirmedByRaw);
   const confirmedAt = ctx?.confirmedAt ?? nowIso();
 
-  const derivationLike = {
-    classification: latest.classification,
-    outsourceSubtype: null, // 未持久化候选明细；由 choice 显式携带补齐（见模块头注）
-    hitTier: latest.hitTier,
-    sourceRef: latest.sourceRef,
-    candidates: [],
-  };
-
-  const outcome = confirmClassificationDomain(derivationLike, choice, { confirmedBy, confirmedAt });
+  const outcome = confirmClassificationDomain(latest, choice, { confirmedBy, confirmedAt });
   if (!outcome.accepted) {
-    throwRejection(CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_ALLOWED, undefined, {
-      reasonCode: outcome.reasonCode,
-    });
+    const rejectionByReason = {
+      CLASSIFICATION_NOT_ALLOWED: CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_ALLOWED,
+      CLASSIFICATION_NOT_CANDIDATE: CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_CANDIDATE,
+      OUTSOURCE_SUBTYPE_MISMATCH: CLASSIFICATION_REJECTION.OUTSOURCE_SUBTYPE_MISMATCH,
+    };
+    throwRejection(
+      rejectionByReason[outcome.reasonCode] ?? CLASSIFICATION_REJECTION.CLASSIFICATION_NOT_ALLOWED,
+      undefined,
+      { reasonCode: outcome.reasonCode },
+    );
   }
 
   const { id } = appendAndSync(cardId, {
+    status: outcome.result.status,
     classification: outcome.result.classification,
+    recommendedClassification: outcome.result.recommendedClassification,
     outsourceSubtype: outcome.result.outsourceSubtype,
     hitTier: outcome.result.hitTier,
     sourceRef: outcome.result.sourceRef,
+    candidates: latest.candidates,
+    reasonCode: null,
+    evaluatedTiers: latest.evaluatedTiers,
+    derivationResultId: latest.id,
     isManualConfirmed: true,
     confirmedBy,
     confirmedAt,
-  });
+  }, true);
 
-  return { ...outcome.result, cardId, resultId: id };
+  return { ...outcome.result, cardId, derivationResultId: latest.id, resultId: id };
 }
 
 /**
@@ -268,7 +324,8 @@ export function listClassificationHistory(cardId) {
 }
 
 /**
- * 取某工卡的最新分类结果（即当前权威值所同步的那一行）。
+ * 取某工卡的最新分类审计结果；其 `status` 可为 pending/undetermined，因而不必然等同于
+ * `task_card` 当前权威分类。
  * @param {number|string} cardId
  * @returns {object|null}
  * @throws {ServiceError} 工卡不存在（404）

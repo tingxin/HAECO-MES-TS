@@ -6,10 +6,11 @@
  *   传入（`{ tier_code, tier_order, enabled }` 行集）。本模块**不遍历** `enums.js` 的
  *   `DERIVATION_PRIORITY` 常量决定顺序——该常量仅用于校验层级代码字面量是否已知。
  *   改配置表即改判定结果，不改代码。
- * - **P6 兜底映射的权威源是 `card_type_commercial_map` 表**，同样由调用方传入，
- *   不在代码中硬编码 01→Gear Inspection 之类的映射，且**永不覆盖 P1–P5 的命中结果**。
- * - 同层多命中（需求 29.4）与工卡类型多值映射（需求 29.3、43.4）**不自动裁决**，
- *   产出候选集并要求人工确认。
+ * - **P6 类型映射的权威源是 `card_type_commercial_map` 表**，同样由调用方传入，
+ *   不在代码中硬编码 01→Gear Inspection 之类的映射；P6 启用时与 P1–P5 事实候选共同聚合，
+ *   但不会覆盖或删除事实来源证据。
+ * - 评估全部启用层级并按分类去重；相同分类聚合全部来源，不同分类形成候选集。
+ *   类型 11 固定双候选且不提供推荐值，必须人工确认。
  * - 每条结果与每个候选值均携带**命中层级**（`hitTier`）与**依据来源**（`sourceRef`），
  *   对应 `commercial_classification_result.hit_tier` / `source_ref`（需求 29.5）。
  * - 纯函数：相同输入恒得相同输出（不读时钟、不用随机数），人工确认时间由调用方传入。
@@ -51,6 +52,9 @@ export const DERIVATION_REASON = Object.freeze({
   NO_TIER_HIT: 'NO_TIER_HIT',                       // P1–P6 均未命中
   PRIORITY_CONFIG_MISSING: 'PRIORITY_CONFIG_MISSING', // 优先级链配置缺失或全部停用
   CLASSIFICATION_NOT_ALLOWED: 'CLASSIFICATION_NOT_ALLOWED', // 人工指定越出取值集合（需求 29.7）
+  CLASSIFICATION_NOT_CANDIDATE: 'CLASSIFICATION_NOT_CANDIDATE',
+  OUTSOURCE_SUBTYPE_MISMATCH: 'OUTSOURCE_SUBTYPE_MISMATCH',
+  MULTIPLE_CANDIDATES: 'MULTIPLE_CANDIDATES',
 });
 
 /** 分类取值封闭性判定（需求 29.1、29.7） */
@@ -250,8 +254,9 @@ function evaluateP5(card, sources) {
 }
 
 /**
- * P6 工卡类型兜底（需求 29.2 P6、43.2–43.4）——仅在 P1–P5 全部未命中时才被求值，
- * 故结构上不可能覆盖 P1–P5；类型 01、11 映射双值时产出候选集不自动裁决。
+ * P6 工卡类型候选来源（需求 29.2 P6、43.2–43.4）。P6 仅在运行时配置启用时求值，
+ * 启用后与 P1–P5 的事实候选共同聚合，不是仅在事实层无命中时才执行的排他兜底。
+ * 映射产生多个不同分类时保留全部候选，不自动裁决。
  */
 function evaluateP6(card, cardTypeMap) {
   const cardType = pick(card, 'card_type', 'cardType');
@@ -272,27 +277,60 @@ const TIER_EVALUATORS = Object.freeze({
   [TIER_P6]: (card, sources, cardTypeMap) => evaluateP6(card, cardTypeMap),
 });
 
-/** 候选去重：同 (分类, 外包细分) 视为同一候选，保留首个证据来源 */
-function dedupeCandidates(candidates) {
-  const seen = new Set();
-  const result = [];
-  for (const item of candidates) {
-    const key = `${item.classification}|${item.outsourceSubtype ?? ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(item);
+/**
+ * 按分类去重，并把该分类来自各层级/单据的全部证据聚合到 `sources`。
+ * 候选顺序严格等于运行时层级顺序中该分类首次出现的顺序。
+ */
+function aggregateCandidates(hits) {
+  const byClassification = new Map();
+  for (const hit of hits) {
+    let item = byClassification.get(hit.classification);
+    if (!item) {
+      item = {
+        classification: hit.classification,
+        outsourceSubtype: hit.outsourceSubtype,
+        outsourceSubtypes: [],
+        hitTier: hit.hitTier,
+        sourceRef: hit.sourceRef,
+        sources: [],
+      };
+      byClassification.set(hit.classification, item);
+    }
+    const evidence = {
+      hitTier: hit.hitTier,
+      sourceRef: hit.sourceRef,
+      outsourceSubtype: hit.outsourceSubtype,
+    };
+    if (!item.sources.some((source) => source.hitTier === evidence.hitTier
+      && source.sourceRef === evidence.sourceRef
+      && source.outsourceSubtype === evidence.outsourceSubtype)) {
+      item.sources.push(Object.freeze(evidence));
+    }
+    if (isValidOutsourceSubtype(hit.outsourceSubtype)
+      && !item.outsourceSubtypes.includes(hit.outsourceSubtype)) {
+      item.outsourceSubtypes.push(hit.outsourceSubtype);
+    }
   }
-  return result;
+  return [...byClassification.values()].map((item) => Object.freeze({
+    ...item,
+    outsourceSubtype: item.classification === 'Outsource' && item.outsourceSubtypes.length === 1
+      ? item.outsourceSubtypes[0]
+      : null,
+    outsourceSubtypes: Object.freeze(item.outsourceSubtypes),
+    sources: Object.freeze(item.sources),
+  }));
 }
 
 /**
- * 按优先级链派生商务执行工卡分类（需求 29.1–29.5、43.2–43.4）。
+ * 按运行时配置聚合商务执行工卡分类候选（需求 29.1–29.5、43.2–43.4）。
  *
- * 自上而下遍历 `priorityCfg` 给出的启用层级，取**首个命中层级**的结果：
- * - 该层唯一命中 → `status='derived'`，`classification` 即为派生值；
- * - 该层多条命中（含类型 01/11 的双值映射）→ `status='requires_confirmation'`，
- *   `classification` 恒为 `null`（**不自动裁决**），全部命中值置于 `candidates`；
- * - 全部层级均未命中 → `status='undetermined'`。
+ * 按 `priorityCfg` 的顺序遍历全部启用层级并聚合命中，按分类去重但保留全部来源：
+ * - 仅一个不同分类候选 → `status='derived'`，自动采用该分类；
+ * - 多个不同分类候选 → `status='requires_confirmation'`，不自动裁决，首候选仅作为推荐；
+ * - 全部启用层级均未命中 → `status='undetermined'`；
+ * - 类型 11 固定双候选、无推荐并忽略 P1–P5，不受运行时层级配置影响。
+ *
+ * P6 不是排他兜底：启用时与 P1–P5 共同聚合，显式停用或未配置时不参与。
  *
  * @param {object} card 工卡对象（P6 仅用到 `card_type`）
  * @param {object} sources P1–P5 判定源聚合，即 `GET /api/classification-sources` 的返回：
@@ -304,12 +342,14 @@ function dedupeCandidates(candidates) {
  * @returns {object} 派生结果，含 `hitTier` / `sourceRef` / `candidates` / `reasonCode` / `evaluatedTiers`
  */
 export function deriveCommercialClassification(card, sources, priorityCfg) {
-  const { tiers, cardTypeMap } = resolveConfig(priorityCfg, sources);
+  const { tiers: configuredTiers, cardTypeMap } = resolveConfig(priorityCfg, sources);
   const cardId = pick(card, 'id', 'card_id', 'cardId') ?? null;
+  const cardType = pick(card, 'card_type', 'cardType');
   const base = {
     cardId,
     status: DERIVATION_STATUS.UNDETERMINED,
     classification: null,
+    recommendedClassification: null,
     outsourceSubtype: null,
     hitTier: null,
     sourceRef: null,
@@ -322,51 +362,72 @@ export function deriveCommercialClassification(card, sources, priorityCfg) {
     evaluatedTiers: [],
   };
 
-  if (tiers.length === 0) {
-    return Object.freeze({ ...base, reasonCode: DERIVATION_REASON.PRIORITY_CONFIG_MISSING });
-  }
-
-  const evaluatedTiers = [];
-  for (const tier of tiers) {
-    const evaluator = TIER_EVALUATORS[tier.tierCode];
-    const hits = dedupeCandidates(evaluator(card, sources, cardTypeMap));
-    evaluatedTiers.push(Object.freeze({
-      tierCode: tier.tierCode, tierOrder: tier.tierOrder, hitCount: hits.length,
-    }));
-    if (hits.length === 0) continue;
-
-    if (hits.length === 1) {
-      const [hit] = hits;
-      return Object.freeze({
-        ...base,
-        status: DERIVATION_STATUS.DERIVED,
-        classification: hit.classification,
-        outsourceSubtype: hit.outsourceSubtype,
-        hitTier: hit.hitTier,
-        sourceRef: hit.sourceRef,
-        candidates: Object.freeze([hit]),
-        reasonCode: null,
-        evaluatedTiers: Object.freeze(evaluatedTiers),
-      });
-    }
-
-    // 同层多命中 / 类型多值映射：不自动裁决，产出候选集要求人工确认（需求 29.3、29.4、43.4）
+  // 类型 11 是澄清后的强制例外：忽略事实层 P1-P5，固定双候选且永远待人工确认。
+  if (cardType === '11') {
+    const hits = [
+      candidate('Material Special Replacement', TIER_P6, 'card_type:11'),
+      candidate('Configuration(MOD)', TIER_P6, 'card_type:11'),
+    ];
     return Object.freeze({
       ...base,
       status: DERIVATION_STATUS.REQUIRES_CONFIRMATION,
-      classification: null,
-      hitTier: tier.tierCode,
-      sourceRef: null,
-      candidates: Object.freeze(hits),
+      candidates: Object.freeze(aggregateCandidates(hits)),
       requiresManualConfirmation: true,
-      reasonCode: tier.tierCode === TIER_P6
-        ? DERIVATION_REASON.CARD_TYPE_MULTI_MAP
-        : DERIVATION_REASON.MULTI_HIT_IN_TIER,
+      reasonCode: DERIVATION_REASON.CARD_TYPE_MULTI_MAP,
+      evaluatedTiers: Object.freeze([{ tierCode: TIER_P6, tierOrder: null, hitCount: 2 }]),
+    });
+  }
+
+  // 仅评估运行时配置中启用的层级。P6 启用时与事实候选共同聚合；缺失或停用时不参与。
+  if (configuredTiers.length === 0) {
+    return Object.freeze({ ...base, reasonCode: DERIVATION_REASON.PRIORITY_CONFIG_MISSING });
+  }
+
+  const allHits = [];
+  const evaluatedTiers = [];
+  for (const tier of configuredTiers) {
+    const evaluator = TIER_EVALUATORS[tier.tierCode];
+    const hits = evaluator(card, sources, cardTypeMap);
+    evaluatedTiers.push(Object.freeze({
+      tierCode: tier.tierCode,
+      tierOrder: tier.tierOrder,
+      hitCount: hits.length,
+    }));
+    allHits.push(...hits);
+  }
+
+  const candidates = aggregateCandidates(allHits);
+  if (candidates.length === 0) {
+    return Object.freeze({ ...base, evaluatedTiers: Object.freeze(evaluatedTiers) });
+  }
+
+  const first = candidates[0];
+  if (candidates.length === 1) {
+    return Object.freeze({
+      ...base,
+      status: DERIVATION_STATUS.DERIVED,
+      classification: first.classification,
+      recommendedClassification: first.classification,
+      outsourceSubtype: first.outsourceSubtype,
+      hitTier: first.hitTier,
+      sourceRef: first.sourceRef,
+      candidates: Object.freeze(candidates),
+      reasonCode: null,
       evaluatedTiers: Object.freeze(evaluatedTiers),
     });
   }
 
-  return Object.freeze({ ...base, evaluatedTiers: Object.freeze(evaluatedTiers) });
+  return Object.freeze({
+    ...base,
+    status: DERIVATION_STATUS.REQUIRES_CONFIRMATION,
+    recommendedClassification: first.classification,
+    hitTier: first.hitTier,
+    sourceRef: first.sourceRef,
+    candidates: Object.freeze(candidates),
+    requiresManualConfirmation: true,
+    reasonCode: DERIVATION_REASON.MULTIPLE_CANDIDATES,
+    evaluatedTiers: Object.freeze(evaluatedTiers),
+  });
 }
 
 /**
@@ -374,8 +435,8 @@ export function deriveCommercialClassification(card, sources, priorityCfg) {
  *
  * - `choice` 越出 `COMMERCIAL_CLASSIFICATION` 时**拒绝**并给出原因码（需求 29.7）；
  * - 接受时标记 `isManualConfirmed`，记录确认人与确认时间（时间由调用方传入，保持纯函数）；
- * - 命中层级与依据来源沿用派生结果：选中候选值时取该候选的 `hitTier` / `sourceRef`，
- *   人工另行指定（不在候选集内）时保留派生层级并标记 `isCandidateChoice = false`（需求 29.5）。
+ * - 选定值必须属于当前候选集；Outsource 还必须提交候选证据允许的 subtype；
+ * - 命中层级与依据来源取自所选候选（Outsource 按 subtype 绑定对应证据）。
  *
  * @param {object} derivation {@link deriveCommercialClassification} 的返回值
  * @param {string|object} choice 选定分类，或 `{ classification, outsourceSubtype }`
@@ -394,15 +455,36 @@ export function confirmClassification(derivation, choice, ctx = {}) {
     });
   }
 
+  const candidates = Array.isArray(derivation?.candidates) ? derivation.candidates : [];
+  const matched = candidates.find((item) => item.classification === classification) ?? null;
+  if (matched === null) {
+    return Object.freeze({
+      accepted: false,
+      reasonCode: DERIVATION_REASON.CLASSIFICATION_NOT_CANDIDATE,
+      result: null,
+    });
+  }
+
   const rawSubtype = typeof choice === 'string'
     ? undefined
     : pick(choice, 'outsourceSubtype', 'outsource_subtype', 'subtype');
-  const candidates = Array.isArray(derivation?.candidates) ? derivation.candidates : [];
-  const matched = candidates.find((item) => item.classification === classification
-    && (rawSubtype === undefined || item.outsourceSubtype === rawSubtype)) ?? null;
-  const outsourceSubtype = classification === 'Outsource'
-    ? (isValidOutsourceSubtype(rawSubtype) ? rawSubtype : (matched?.outsourceSubtype ?? null))
-    : null;
+  let outsourceSubtype = null;
+  let matchedEvidence = matched.sources?.[0] ?? matched;
+  if (classification === 'Outsource') {
+    const allowedSubtypes = Array.isArray(matched.outsourceSubtypes)
+      ? matched.outsourceSubtypes
+      : [matched.outsourceSubtype].filter(isValidOutsourceSubtype);
+    if (!isValidOutsourceSubtype(rawSubtype) || !allowedSubtypes.includes(rawSubtype)) {
+      return Object.freeze({
+        accepted: false,
+        reasonCode: DERIVATION_REASON.OUTSOURCE_SUBTYPE_MISMATCH,
+        result: null,
+      });
+    }
+    outsourceSubtype = rawSubtype;
+    matchedEvidence = matched.sources?.find((source) => source.outsourceSubtype === rawSubtype)
+      ?? matchedEvidence;
+  }
 
   return Object.freeze({
     accepted: true,
@@ -411,12 +493,13 @@ export function confirmClassification(derivation, choice, ctx = {}) {
       ...(derivation ?? {}),
       status: DERIVATION_STATUS.CONFIRMED,
       classification,
+      recommendedClassification: derivation?.recommendedClassification ?? null,
       outsourceSubtype,
-      hitTier: matched?.hitTier ?? derivation?.hitTier ?? null,
-      sourceRef: matched?.sourceRef ?? derivation?.sourceRef ?? null,
+      hitTier: matchedEvidence?.hitTier ?? matched.hitTier ?? null,
+      sourceRef: matchedEvidence?.sourceRef ?? matched.sourceRef ?? null,
       requiresManualConfirmation: false,
       isManualConfirmed: true,
-      isCandidateChoice: matched !== null,
+      isCandidateChoice: true,
       confirmedBy: ctx.confirmedBy ?? null,
       confirmedAt: ctx.confirmedAt ?? null,
       reasonCode: null,

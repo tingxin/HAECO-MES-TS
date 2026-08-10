@@ -47,11 +47,18 @@ function goldenCtx() {
     stageConstraintCfg: {
       constraints: [{ card_type: '01', allowed_stage: 'RTN', is_auto_fill: 1 }],
     },
+    latestClassificationResult: {
+      id: 1,
+      status: 'derived',
+      classification: 'Gear Inspection',
+      candidates: [{ classification: 'Gear Inspection' }],
+      isManualConfirmed: false,
+    },
   };
 }
 
 // ---------------------------------------------------------------------------
-// (a)-(g) 各自的"破坏一项、保持其余六项黄金"生成器
+// (a)-(h) 各自的"破坏一项、保持其余校验黄金"生成器
 // ---------------------------------------------------------------------------
 
 /** (a) 查重：ctx.cards 中放入一个不同 id 但相同 task_no/revision 的工卡。 */
@@ -162,23 +169,35 @@ const breakG = fc.constantFrom('CUS', 'MOD', 'SPC').map((stage) => {
   return { letter: 'g', card, ctx };
 });
 
-const breakOneCheckArb = fc.oneof(breakA, breakB, breakC, breakD, breakE, breakF, breakG);
+/**
+ * (h) 商务分类持久状态：缺失、未定、待确认、伪 confirmed 或多候选 derived 均须 fail closed。
+ */
+const invalidClassificationResultArb = fc.constantFrom(
+  undefined,
+  { status: 'undetermined', classification: null, candidates: [] },
+  { status: 'requires_confirmation', classification: null, candidates: [{ classification: 'Routine' }, { classification: 'LLP' }] },
+  { status: 'derived', classification: 'Routine', candidates: [{ classification: 'Routine' }, { classification: 'LLP' }] },
+  { status: 'confirmed', classification: 'Routine', candidates: [{ classification: 'Routine' }], isManualConfirmed: false },
+);
+const breakH = invalidClassificationResultArb.map((latestClassificationResult) => {
+  const card = goldenCard();
+  const ctx = goldenCtx();
+  ctx.latestClassificationResult = latestClassificationResult;
+  return { letter: 'h', card, ctx };
+});
 
-// Feature: task-card-management, Property 19: 提交审核校验完备性与审核记录归档 —— For any 工卡，其可进入「审核中」当且仅当校验清单 (a) 查重、(b) 枚举、(c) 必填、(d) 能力清单、(e) 变更原因、(f) 签署项配置、(g) Stage×工卡类型组合全部通过；任一未通过则状态保持「新增」并给出未通过项。
+const breakOneCheckArb = fc.oneof(breakA, breakB, breakC, breakD, breakE, breakF, breakG, breakH);
+
+// Feature: task-card-management, Property 19: 提交审核校验完备性与审核记录归档 —— For any 工卡，其可进入「审核中」当且仅当校验清单 (a) 查重、(b) 枚举、(c) 必填、(d) 能力清单、(e) 变更原因、(f) 签署项配置、(g) Stage×工卡类型组合、(h) 商务分类持久状态全部通过；任一未通过则状态保持「新增」并给出未通过项。
 describe('Property 19: 提交审核校验完备性（纯函数层，submitReviewChecklist）', () => {
-  it('黄金路径：(a)-(g) 全部通过时 ok===true 且 failedChecks 为空', () => {
+  it('黄金路径：(a)-(h) 全部通过时 ok===true 且 failedChecks 为空', () => {
     const result = submitReviewChecklist(goldenCard(), goldenCtx());
     expect(result.ok).toBe(true);
     expect(result.failedChecks).toEqual([]);
   });
 
-  // 注：本属性在 design.md 中同时涵盖"每次被接受的审核动作使审核记录数 +1"与
-  // "升版新版本审核记录数初始为 0"两条断言——这两条依赖 review_record 表的持久化行为，
-  // 是数据库/仓储层关注点，超出 submitReviewChecklist 这一纯函数的职责范围。纯函数层
-  // 无法在不引入 DB 依赖的前提下验证"记录数 +1"或"初始为 0"，故本测试仅覆盖可从纯函数
-  // 断言的部分：校验清单的组合完备性（破坏 (a)-(g) 任一项均阻止提交）。记录数相关断言
-  // 留待后续任务的服务层/仓储层集成测试（内存 SQLite）覆盖。
-  it('(a)-(g) 任一项被破坏（其余六项保持黄金）时 ok===false 且该项出现在 failedChecks', () => {
+  // 审核记录数量与升版初始记录由服务层/仓储层集成测试覆盖；本属性聚焦纯函数清单完备性。
+  it('(a)-(h) 任一项被破坏时 ok===false 且该项出现在 failedChecks', () => {
     fc.assert(
       fc.property(breakOneCheckArb, ({ letter, card, ctx }) => {
         const result = submitReviewChecklist(card, ctx);

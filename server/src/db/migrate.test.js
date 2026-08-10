@@ -86,3 +86,27 @@ describe('runMigration({ dbPath })', () => {
     expect(second.tables).toEqual(first.tables);
   });
 });
+
+
+describe('commercial_classification_result 兼容迁移', () => {
+  it('幂等补列并保留旧行数据', () => {
+    const db = openDatabase(':memory:');
+    try {
+      migrate(db);
+      const cardId = db.prepare("INSERT INTO task_card (task_no, revision, title, card_type, status) VALUES ('LEGACY-CLS', 1, 'legacy', '04', 'New')").run().lastInsertRowid;
+      db.exec('DROP TABLE commercial_classification_result');
+      db.exec(`CREATE TABLE commercial_classification_result (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER NOT NULL,
+        classification TEXT, hit_tier TEXT, source_ref TEXT,
+        is_manual_confirmed INTEGER NOT NULL DEFAULT 0, confirmed_by TEXT,
+        confirmed_at TEXT, created_at TEXT)`);
+      db.prepare("INSERT INTO commercial_classification_result (card_id, classification, hit_tier, source_ref) VALUES (?, 'Routine', 'P6_CardTypeFallback', 'legacy')").run(cardId);
+      migrate(db);
+      migrate(db);
+      const columns = db.prepare('PRAGMA table_info(commercial_classification_result)').all().map((row) => row.name);
+      expect(columns).toEqual(expect.arrayContaining(['status', 'candidates_json', 'recommended_classification', 'outsource_subtype', 'reason_code', 'evaluated_tiers_json', 'derivation_result_id']));
+      expect(db.prepare('SELECT classification, source_ref FROM commercial_classification_result').get())
+        .toEqual({ classification: 'Routine', source_ref: 'legacy' });
+    } finally { db.close(); }
+  });
+});
