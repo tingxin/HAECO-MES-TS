@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# 运行时生成的 SQLite 数据文件与附件目录
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/attachments/
+
+# 日志与本地环境
+*.log
+.env
+.env.local

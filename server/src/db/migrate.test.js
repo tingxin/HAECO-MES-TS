@@ -1,0 +1,88 @@
+/**
+ * 迁移脚本单元测试（任务 3.6）。
+ *
+ * 关注点：① 迁移经 schema.js 渲染而非读取 schema.sql 原文（占位符不会被执行）；
+ * ② 44 张表齐备；③ 可重复执行（幂等）；④ 既可作用于内存库也可作用于临时文件库，
+ * 后者是属性/接口测试逐次重建数据库的前提。
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { openDatabase } from './connection.js';
+import { listTables, migrate, runMigration } from './migrate.js';
+
+/** schema.sql 应建立的表（含 Section 20 三张只读集成 mock 表，共 44 张） */
+const EXPECTED_TABLE_COUNT = 44;
+
+const tempDirs = [];
+
+function tempDbPath(name = 'migrate.db') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'haeco-mes-migrate-'));
+  tempDirs.push(dir);
+  return path.join(dir, name);
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+});
+
+describe('migrate(connection)', () => {
+  it('在内存库上建立全部 44 张表', () => {
+    const db = openDatabase(':memory:');
+    try {
+      migrate(db);
+      const tables = listTables(db);
+      expect(tables).toHaveLength(EXPECTED_TABLE_COUNT);
+      // 四个域各取代表表，确认分节均已执行
+      for (const table of ['task_card', 'job', 'change_record', 'role_permission', 'ppc_schedule']) {
+        expect(tables).toContain(table);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('可重复执行且表数量不变（DDL 全部 IF NOT EXISTS）', () => {
+    const db = openDatabase(':memory:');
+    try {
+      migrate(db);
+      const first = listTables(db);
+      expect(() => migrate(db)).not.toThrow();
+      expect(listTables(db)).toEqual(first);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('迁移后的枚举列受 CHECK 约束（DDL 经 enums.js 渲染，占位符未被原样执行）', () => {
+    const db = openDatabase(':memory:');
+    try {
+      migrate(db);
+      const insert = db.prepare(
+        'INSERT INTO task_card (task_no, revision, title, card_type, status) VALUES (?, ?, ?, ?, ?)',
+      );
+      expect(() => insert.run('TC-MIG-001', 1, '标题', '99', 'New')).toThrow(/CHECK/i);
+      expect(() => insert.run('TC-MIG-001', 1, '标题', '04', 'New')).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('runMigration({ dbPath })', () => {
+  it('在临时文件库上建库并返回表清单，重复执行不报错', () => {
+    const dbPath = tempDbPath();
+
+    const first = runMigration({ dbPath });
+    expect(first.dbPath).toBe(dbPath);
+    expect(first.tables).toHaveLength(EXPECTED_TABLE_COUNT);
+    expect(fs.existsSync(dbPath)).toBe(true);
+
+    const second = runMigration({ dbPath });
+    expect(second.tables).toEqual(first.tables);
+  });
+});
