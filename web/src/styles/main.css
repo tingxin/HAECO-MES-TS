@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+html, body, #app { min-height: 100%; margin: 0; }
+body { color: #303133; background: #f4f6f8; font-family: Arial, "Microsoft YaHei", sans-serif; }
+.app-shell { min-height: 100vh; }
+.app-header { display: flex; align-items: center; gap: 28px; color: #fff; background: #12395b; }
+.brand { font-size: 18px; font-weight: 700; white-space: nowrap; }
+nav { display: flex; flex: 1; gap: 20px; }
+nav a { color: #dce8f2; text-decoration: none; }
+nav a.router-link-active { color: #fff; font-weight: 700; }
+.user-area { display: flex; align-items: center; gap: 12px; }
+.identity-page { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: #eaf0f5; }
+.identity-card { width: min(420px, 100%); }
+.identity-card .el-alert { margin-bottom: 20px; }
+.full-width { width: 100%; }
+.placeholder-card { min-height: 420px; }
+.route-context { text-align: center; }
