@@ -572,8 +572,8 @@ describe('Task 17.5 main-chain HTTP regression', () => {
 
     const versions = await auth('get', `/api/task-cards/${candidate.id}/versions`, engineer).expect(200);
     expect(versions.body.data.map(({ revision, status }) => ({ revision, status }))).toEqual([
-      { revision: 1, status: 'Superseded' },
       { revision: 2, status: 'Effective' },
+      { revision: 1, status: 'Superseded' },
     ]);
     expect(getDb().prepare("SELECT COUNT(*) AS count FROM task_card WHERE task_no = ? AND status = 'Effective'")
       .get(created.taskNo).count).toBe(1);

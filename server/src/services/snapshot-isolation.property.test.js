@@ -52,6 +52,18 @@ const mutationArb = fc.record({
   numericValue: fc.integer({ min: -1000, max: 1000 }),
 });
 
+function structuredComponentPayload(type, token, numericValue) {
+  if (type === 'tool') return { rows: [{ partNo: `TOOL-${token}`, description: `Tool ${token}` }] };
+  if (type === 'consumable') return { rows: [{
+    partNo: `MAT-${token}`, description: `Material ${token}`, qty: String(numericValue), category: 'EA',
+  }] };
+  if (type === 'image') return {
+    attachmentId: Math.abs(numericValue) + 1,
+    annotations: [{ type: 'rect', points: [[0, 0], [1, 1]], color: '#ff0000' }],
+  };
+  return { generated: numericValue, token };
+}
+
 function rebuildSeededDatabase() {
   resetDb(':memory:');
   migrate();
@@ -234,7 +246,7 @@ function mutateRevision(revised, input) {
     component.id,
     {
       type: input.componentType,
-      payload: { generated: input.numericValue, token: input.mutationToken },
+      payload: structuredComponentPayload(input.componentType, input.mutationToken, input.numericValue),
       sortOrder: 19,
     },
     AUTHOR,
@@ -279,7 +291,7 @@ function mutateRevision(revised, input) {
     addedStep.id,
     {
       type: input.componentType,
-      payload: { added: input.mutationToken },
+      payload: structuredComponentPayload(input.componentType, `ADDED-${input.mutationToken}`, input.numericValue),
       sortOrder: 1,
     },
     AUTHOR,
@@ -303,10 +315,9 @@ function mutateRevision(revised, input) {
     `Revised content ${input.mutationToken}`,
   );
   expect(captureItemRepo.findById(capture.id).label).toBe(`Revised capture ${input.mutationToken}`);
-  expect(componentRepo.findById(component.id).payload).toEqual({
-    generated: input.numericValue,
-    token: input.mutationToken,
-  });
+  expect(componentRepo.findById(component.id).payload).toEqual(
+    structuredComponentPayload(input.componentType, input.mutationToken, input.numericValue),
+  );
   expect(signatureRequirementRepo.findById(signature.id).sortOrder).toBe(23);
 
   return { deletedStep, retainedStep, addedStep, currentSteps };

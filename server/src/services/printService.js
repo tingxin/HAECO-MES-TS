@@ -208,4 +208,15 @@ export function getPrintModel(cardId, options = {}) {
   };
 }
 
-export default { getPrintModel };
+export function getBatchPrintModels(cardIds) {
+  if (!Array.isArray(cardIds) || cardIds.length === 0) {
+    throw new ServiceError(CODE.VALIDATION, '须先选择工卡', { rejection: 'EMPTY_IDS' });
+  }
+  return cardIds.map((cardId, index) => ({
+    cardId,
+    pageBreakAfter: index < cardIds.length - 1,
+    ...getPrintModel(cardId),
+  }));
+}
+
+export default { getPrintModel, getBatchPrintModels };

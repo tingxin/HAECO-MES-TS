@@ -7,6 +7,9 @@ export const taskCardApi = {
   list: (params) => http.get('/task-cards', { params }),
   get: (id, params) => http.get(cardPath(id), { params }),
   listVersions: (id) => http.get(`${cardPath(id)}/versions`),
+  getVersionSnapshot: (id, versionId) => http.get(`${cardPath(id)}/versions/${segment(versionId)}/snapshot`),
+  getVersionDiff: (id, versionId) => http.get(`${cardPath(id)}/versions/${segment(versionId)}/diff`),
+  printVersion: (id, versionId) => http.get(`${cardPath(id)}/versions/${segment(versionId)}/print`),
   checkDuplicate: (params) => http.get('/task-cards/check-duplicate', { params }),
   create: (data) => http.post('/task-cards', data),
   update: (id, data) => http.put(cardPath(id), data),
@@ -32,4 +35,5 @@ export const taskCardApi = {
     params: { ids: Array.isArray(ids) ? ids.join(',') : ids, mode }, responseType: 'blob',
   }),
   getPrintModel: (id, params) => http.get(`${cardPath(id)}/print`, { params }),
+  getBatchPrintModels: (ids) => http.post('/task-cards/print', { ids }),
 };

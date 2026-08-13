@@ -4,6 +4,9 @@ import fc from 'fast-check';
 import { parseComponent, serializeComponent } from './collections.js';
 import { COMPONENT_TYPE } from './enums.js';
 
+const tokenArb = fc.string({ minLength: 1, maxLength: 24 })
+  .filter((value) => value.trim().length > 0);
+
 const jsonScalarArb = fc.oneof(
   fc.string({ maxLength: 24 }),
   fc.integer({ min: -1_000_000, max: 1_000_000 }),
@@ -37,7 +40,27 @@ const deepPayloadArb = fc.record({
   }),
 });
 
-const payloadsForAllTypesArb = fc.tuple(...COMPONENT_TYPE.map(() => deepPayloadArb));
+const payloadArbFor = (type) => {
+  if (type === 'tool') return fc.record({
+    rows: fc.array(fc.record({ partNo: tokenArb, description: tokenArb }), { maxLength: 4 }),
+  });
+  if (type === 'consumable') return fc.record({
+    rows: fc.array(fc.record({
+      partNo: tokenArb, description: tokenArb, qty: tokenArb, category: tokenArb,
+    }), { maxLength: 4 }),
+  });
+  if (type === 'image') return fc.record({
+    attachmentId: fc.integer({ min: 1, max: 100000 }),
+    annotations: fc.array(fc.record({
+      type: fc.constantFrom('rect', 'pen', 'arrow'),
+      points: fc.constant([[0, 0], [1, 1]]),
+      color: tokenArb,
+    }), { maxLength: 4 }),
+  });
+  return deepPayloadArb;
+};
+
+const payloadsForAllTypesArb = fc.tuple(...COMPONENT_TYPE.map(payloadArbFor));
 const stepBindingArb = fc.oneof(
   fc.integer({ min: 1, max: 1_000_000 }),
   fc.string({ minLength: 1, maxLength: 16 }).filter((value) => value.trim().length > 0),

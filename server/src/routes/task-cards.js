@@ -1,10 +1,10 @@
 import { Router } from 'express';
 
-import { CODE, sendOk } from '../lib/response.js';
-import { ServiceError } from '../lib/service-error.js';
+import { sendOk } from '../lib/response.js';
 import authorize from '../middleware/authorize.js';
 import userContext from '../middleware/user-context.js';
 import taskCardService from '../services/taskCardService.js';
+import historyService from '../services/historyService.js';
 import reviewService from '../services/reviewService.js';
 import versionService from '../services/versionService.js';
 import voidService from '../services/voidService.js';
@@ -16,6 +16,7 @@ import changeRecordRepo from '../repositories/changeRecordRepo.js';
 
 const FILTER_NAMES = Object.freeze([
   'acType', 'taskNo', 'gearType', 'title', 'status', 'stage', 'cardType',
+  'cmm', 'processSkill', 'processSkills', 'processDescription',
 ]);
 
 function route(handler) {
@@ -28,22 +29,6 @@ function route(handler) {
   };
 }
 
-function positiveInt(value, fallback, label) {
-  if (value === undefined || value === '') return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new ServiceError(CODE.VALIDATION, `${label} 必须为正整数`);
-  }
-  return parsed;
-}
-
-function assertIds(ids) {
-  if (!Array.isArray(ids) || ids.length === 0) {
-    throw new ServiceError(CODE.VALIDATION, '须先选择工卡', { rejection: 'EMPTY_IDS' });
-  }
-  return ids;
-}
-
 function reviewComment(body) {
   return body?.reviewComment ?? body?.comment;
 }
@@ -53,8 +38,8 @@ export const getTaskCards = route((req, res) => {
   );
   return sendOk(res, taskCardService.listCards({
     filters,
-    page: positiveInt(req.query.page, 1, 'page'),
-    pageSize: positiveInt(req.query.pageSize, 20, 'pageSize'),
+    page: req.query.page,
+    pageSize: req.query.pageSize,
   }));
 });
 
@@ -62,7 +47,16 @@ export const getTaskCard = route((req, res) =>
   sendOk(res, taskCardService.getCardDetail(req.params.id, req.query.jobNo)));
 
 export const getTaskCardVersions = route((req, res) =>
-  sendOk(res, taskCardService.listCardVersions(req.params.id)));
+  sendOk(res, historyService.listVersionSummaries(req.params.id)));
+
+export const getTaskCardVersionSnapshot = route((req, res) =>
+  sendOk(res, historyService.getVersionSnapshot(req.params.id, req.params.versionId)));
+
+export const getTaskCardVersionDiff = route((req, res) =>
+  sendOk(res, historyService.getVersionDiff(req.params.id, req.params.versionId)));
+
+export const printTaskCardVersion = route((req, res) =>
+  sendOk(res, historyService.getVersionPrintModel(req.params.id, req.params.versionId)));
 
 export const checkTaskCardDuplicate = route((req, res) =>
   sendOk(res, taskCardService.checkCardDuplicate(
@@ -113,14 +107,14 @@ export const getReviews = route((req, res) => {
   return sendOk(res, reviewRecordRepo.listByCardRevision(card.id, card.revision));
 });
 export const copyTaskCards = route((req, res) =>
-  sendOk(res, versionService.copyCardsBatch(assertIds(req.body?.ids), req.body?.numbering, req.user)));
+  sendOk(res, versionService.copyCardsBatch(req.body?.ids, req.body?.numbering, req.user)));
 
 export const adjustCopiedTaskNo = route((req, res) =>
   sendOk(res, versionService.adjustCopiedTaskNo(req.params.id, req.body?.taskNo)));
 
 export const reviseTaskCards = route((req, res) => {
-  const ids = assertIds(req.body?.ids);
-  const data = ids.length === 1 && req.body?.revision !== undefined
+  const ids = req.body?.ids;
+  const data = Array.isArray(ids) && ids.length === 1 && req.body?.revision !== undefined
     ? [versionService.reviseCard(ids[0], req.body?.reason, req.user, { revision: req.body.revision })]
     : versionService.reviseCardsBatch(ids, req.body?.reason, req.user);
   return sendOk(res, data);
@@ -153,7 +147,7 @@ export const getChangeRecords = route((req, res) => {
 
 export const batchReplaceTaskCards = route((req, res) =>
   sendOk(res, versionService.batchReplaceCards(
-    assertIds(req.body?.ids),
+    req.body?.ids,
     { field: req.body?.field, from: req.body?.from, to: req.body?.to },
     req.body?.reason,
     { ...req.user, method: req.method, path: req.originalUrl },
@@ -216,8 +210,20 @@ export function createTaskCardsRouter({
   router.post('/task-cards/:id/signatures', ...allowed('job_exec_write', signTaskCard));
   router.get('/task-cards/:id/archive-status', ...allowed('card_read', getArchiveStatus));
 
-  router.get('/task-cards/:id', ...allowed('card_read', getTaskCard));
   router.get('/task-cards/:id/versions', ...allowed('card_read', getTaskCardVersions));
+  router.get(
+    '/task-cards/:id/versions/:versionId/snapshot',
+    ...allowed('card_read', getTaskCardVersionSnapshot),
+  );
+  router.get(
+    '/task-cards/:id/versions/:versionId/diff',
+    ...allowed('card_read', getTaskCardVersionDiff),
+  );
+  router.get(
+    '/task-cards/:id/versions/:versionId/print',
+    ...allowed('card_print_export', printTaskCardVersion),
+  );
+  router.get('/task-cards/:id', ...allowed('card_read', getTaskCard));
   router.post('/task-cards', ...allowed('card_edit', createTaskCard));
   router.put('/task-cards/:id', ...allowed('card_edit', updateTaskCard));
   router.post('/task-cards/:id/reference-docs', ...allowed('card_edit', addReferenceDocument));

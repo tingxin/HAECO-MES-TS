@@ -99,3 +99,16 @@ describe('Section 26.5 JOB、打印与配置视图明确断言', () => {
     wrapper.unmount();
   });
 });
+
+describe('Section 29 print payload presentation', () => {
+  it('renders canonical tool/consumable rows and SVG annotations from the formal print model', () => {
+    const html = renderPrintTriple({ templateId: 9, templateBody: '{{taskNo}}', model: { taskNo: 'TC-29', steps: [{ processId: 'A',
+      tools: [{ rows: [{ partNo: 'T-1', description: 'Torque wrench' }] }],
+      consumables: [{ rows: [{ partNo: 'M-1', description: 'Grease', qty: '2', category: 'tube' }] }],
+      sketches: [{ attachmentId: 7, url: '/api/attachments/7', annotations: [{ type: 'arrow', points: [[0.1, 0.2], [0.8, 0.9]], color: 'red' }] }],
+    }] } });
+    expect(html).toContain('Torque wrench'); expect(html).toContain('Grease'); expect(html).toContain('Qty');
+    expect(html).toContain('<img src="/api/attachments/7"'); expect(html).toContain('<line'); expect(html).toContain('marker-end');
+    expect(html).not.toContain('base64');
+  });
+});

@@ -166,12 +166,41 @@ function buildWhere(filters) {
     const value = pickFilterValue(filters, FILTER_KEY_ALIASES[field]);
     if (value === null) continue;
     if (spec.match === 'substring') {
-      clauses.push(`${spec.column} LIKE ? COLLATE NOCASE`);
+      clauses.push(`tc.${spec.column} LIKE ? COLLATE NOCASE`);
       params.push(`%${value}%`);
     } else {
-      clauses.push(`${spec.column} = ?`);
+      clauses.push(`tc.${spec.column} = ?`);
       params.push(value);
     }
+  }
+
+  const cmm = pickFilterValue(filters, ['cmm']);
+  if (cmm !== null) {
+    const like = `%${cmm}%`;
+    clauses.push(`((tc.document_type = 'CMM' AND (tc.ref_no LIKE ? COLLATE NOCASE
+      OR tc.document_revision LIKE ? COLLATE NOCASE
+      OR (COALESCE(tc.ref_no, '') || ' ' || COALESCE(tc.document_revision, '')) LIKE ? COLLATE NOCASE))
+      OR EXISTS (SELECT 1 FROM reference_document rd WHERE rd.card_id = tc.id AND rd.doc_type = 'CMM'
+        AND (rd.ref_no LIKE ? COLLATE NOCASE OR rd.doc_revision LIKE ? COLLATE NOCASE
+          OR (COALESCE(rd.ref_no, '') || ' ' || COALESCE(rd.doc_revision, '')) LIKE ? COLLATE NOCASE)))`);
+    params.push(like, like, like, like, like, like);
+  }
+
+  const rawSkills = filters?.processSkills ?? filters?.processSkill ?? filters?.process_skills;
+  const skills = (Array.isArray(rawSkills) ? rawSkills : String(rawSkills ?? '').split(','))
+    .map((value) => String(value).trim()).filter(Boolean);
+  const description = pickFilterValue(filters, ['processDescription', 'process_description']);
+  if (skills.length > 0 || description !== null) {
+    const stepClauses = ['ps.card_id = tc.id'];
+    if (skills.length > 0) {
+      stepClauses.push(`ps.skill IN (${skills.map(() => '?').join(', ')})`);
+      params.push(...skills);
+    }
+    if (description !== null) {
+      stepClauses.push(`(ps.description_zh LIKE ? COLLATE NOCASE OR ps.description_en LIKE ? COLLATE NOCASE)`);
+      params.push(`%${description}%`, `%${description}%`);
+    }
+    clauses.push(`EXISTS (SELECT 1 FROM process_step ps WHERE ${stepClauses.join(' AND ')})`);
   }
   return {
     clause: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
@@ -195,12 +224,26 @@ export function list(options = {}) {
   const db = getDb();
 
   const total = db
-    .prepare(`SELECT COUNT(*) AS count FROM task_card ${clause}`)
+    .prepare(`SELECT COUNT(DISTINCT tc.id) AS count FROM task_card tc ${clause}`)
     .get(...params).count;
 
   const rows = db
     .prepare(
-      `SELECT * FROM task_card ${clause} ORDER BY id DESC LIMIT ? OFFSET ?`,
+      `SELECT tc.*,
+        TRIM(
+          CASE WHEN tc.document_type = 'CMM'
+            THEN TRIM(COALESCE(tc.ref_no, '') || ' ' || COALESCE(tc.document_revision, ''))
+            ELSE '' END
+          || CASE WHEN tc.document_type = 'CMM' AND EXISTS (
+              SELECT 1 FROM reference_document rd0 WHERE rd0.card_id = tc.id AND rd0.doc_type = 'CMM'
+            ) THEN '; ' ELSE '' END
+          || COALESCE((
+            SELECT GROUP_CONCAT(
+              TRIM(COALESCE(rd.ref_no, '') || ' ' || COALESCE(rd.doc_revision, '')), '; '
+            ) FROM reference_document rd WHERE rd.card_id = tc.id AND rd.doc_type = 'CMM'
+          ), '')
+        ) AS cmm_revision
+       FROM task_card tc ${clause} ORDER BY tc.id DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, safePageSize, (safePage - 1) * safePageSize);
 

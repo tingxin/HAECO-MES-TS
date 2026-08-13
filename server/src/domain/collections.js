@@ -304,6 +304,99 @@ export function parsePayload(text) {
   }
 }
 
+function objectPayload(payload, label) {
+  const parsed = parsePayload(payload);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PayloadError(`${label} payload 必须为对象`);
+  }
+  return parsed;
+}
+function requiredText(value, label) {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    throw new PayloadError(`${label} 为必填项`);
+  }
+  return String(value);
+}
+function hasFinitePoint(value) {
+  if (Array.isArray(value)) return value.length >= 2 && value.every((item) => Number.isFinite(Number(item)));
+  return value !== null && typeof value === 'object'
+    && Number.isFinite(Number(value.x)) && Number.isFinite(Number(value.y));
+}
+function normalizeAnnotations(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new PayloadError('annotations 必须为数组');
+  return value.map((annotation, index) => {
+    if (annotation === null || typeof annotation !== 'object' || Array.isArray(annotation)) {
+      throw new PayloadError(`第 ${index + 1} 条标注必须为对象`);
+    }
+    const aliases = { rectangle: 'rect', freehand: 'pen' };
+    const type = aliases[annotation.type] ?? annotation.type;
+    if (!['rect', 'pen', 'arrow', 'text'].includes(type)) {
+      throw new PayloadError(`标注类型非法：${String(annotation.type)}`);
+    }
+    const color = requiredText(annotation.color, '标注颜色');
+    const points = annotation.points ?? annotation.path;
+    if (!Array.isArray(points) || points.length === 0 || !points.every(hasFinitePoint)) {
+      throw new PayloadError(`第 ${index + 1} 条标注须包含有效坐标或路径`);
+    }
+    const text = type === 'text' ? requiredText(annotation.text, '文字标注内容') : annotation.text;
+    const normalized = { ...annotation, type, points, color };
+    delete normalized.path;
+    if (text !== undefined) normalized.text = text;
+    return normalized;
+  });
+}
+function normalizeRows(payload, fields, aliases, label) {
+  if (payload.rows !== undefined && !Array.isArray(payload.rows)) {
+    throw new PayloadError(`${label} rows 必须为数组`);
+  }
+  const sourceRows = Array.isArray(payload.rows) ? payload.rows : [payload];
+  return sourceRows.map((row, index) => {
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+      throw new PayloadError(`${label}第 ${index + 1} 行必须为对象`);
+    }
+    return Object.fromEntries(fields.map((field) => {
+      const value = aliases[field].map((key) => row[key]).find((item) => item !== undefined);
+      return [field, requiredText(value, `${label}第 ${index + 1} 行 ${field}`)];
+    }));
+  });
+}
+
+export function normalizeComponentPayload(type, payload) {
+  if (!['image', 'tool', 'consumable'].includes(type)) return parsePayload(payload);
+  const source = objectPayload(payload, type);
+  if (type === 'image') {
+    const hasInlineImage = (value) => {
+      if (typeof value === 'string') return /^data:image\/[a-z0-9.+-]+;base64,/i.test(value.trim());
+      if (Array.isArray(value)) return value.some(hasInlineImage);
+      return value !== null && typeof value === 'object' && Object.values(value).some(hasInlineImage);
+    };
+    if (Object.keys(source).some((key) =>
+      /base64|data[_-]?url|image[_-]?data|original[_-]?image/i.test(key))
+      || hasInlineImage(source)) {
+      throw new PayloadError('图片 payload 不得内联 Base64 原图');
+    }
+    const attachmentId = source.attachmentId ?? source.attachment_id;
+    if (attachmentId === null || attachmentId === undefined || attachmentId === '') {
+      throw new PayloadError('图片 payload 须保留 attachmentId');
+    }
+    const normalized = { ...source, attachmentId, annotations: normalizeAnnotations(source.annotations) };
+    delete normalized.attachment_id;
+    return normalized;
+  }
+  if (type === 'tool') {
+    return { rows: normalizeRows(source, ['partNo', 'description'], {
+      partNo: ['partNo', 'toolPn', 'part_no', 'code', 'name'],
+      description: ['description', 'toolDesc', 'desc', 'details'],
+    }, '工具') };
+  }
+  return { rows: normalizeRows(source, ['partNo', 'description', 'qty', 'category'], {
+    partNo: ['partNo', 'materialNo', 'part_no', 'name'],
+    description: ['description', 'desc', 'details'],
+    qty: ['qty', 'quantity'], category: ['category', 'unit'],
+  }, '耗材') };
+}
+
 /** 数值归一（`sort_order` 等 INTEGER 列）：非数值 → `null`。 */
 function toIntegerOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -341,11 +434,13 @@ export function serializeComponent(component) {
   const source = component === null || typeof component !== 'object' ? {} : component;
   const id = pickField(source, ['id']);
   const type = pickField(source, ['type', 'component_type', 'componentType']);
+  const normalizedType = typeof type === 'string' ? type : null;
+  const rawPayload = pickField(source, ['payload']);
   return Object.freeze({
     id: id === undefined ? null : id,
     step_id: toStepId(pickField(source, ['stepId', 'step_id'])),
-    type: typeof type === 'string' ? type : null,
-    payload: serializePayload(pickField(source, ['payload'])),
+    type: normalizedType,
+    payload: serializePayload(normalizedType === null ? rawPayload : normalizeComponentPayload(normalizedType, rawPayload)),
     sort_order: toIntegerOrNull(pickField(source, ['sortOrder', 'sort_order'])),
   });
 }
@@ -366,11 +461,13 @@ export function parseComponent(row) {
   const source = row === null || typeof row !== 'object' ? {} : row;
   const id = pickField(source, ['id']);
   const type = pickField(source, ['type', 'component_type', 'componentType']);
+  const normalizedType = typeof type === 'string' ? type : null;
+  const rawPayload = pickField(source, ['payload']);
   return Object.freeze({
     id: id === undefined ? null : id,
     stepId: toStepId(pickField(source, ['stepId', 'step_id'])),
-    type: typeof type === 'string' ? type : null,
-    payload: parsePayload(pickField(source, ['payload'])),
+    type: normalizedType,
+    payload: normalizedType === null ? parsePayload(rawPayload) : normalizeComponentPayload(normalizedType, rawPayload),
     sortOrder: toIntegerOrNull(pickField(source, ['sortOrder', 'sort_order'])),
   });
 }

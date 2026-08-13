@@ -15,6 +15,7 @@ import { usePermissionStore } from '../../stores/permission.js';
 const taskApi = vi.hoisted(() => ({
   get: vi.fn(), create: vi.fn(), update: vi.fn(), checkDuplicate: vi.fn(), addReferenceDocument: vi.fn(),
   deleteReferenceDocument: vi.fn(), listChangeRecords: vi.fn(), listRelations: vi.fn(), addRelation: vi.fn(), deleteRelation: vi.fn(), revise: vi.fn(),
+  listVersions: vi.fn(), getVersionSnapshot: vi.fn(), getVersionDiff: vi.fn(), printVersion: vi.fn(),
   release: vi.fn(),
 }));
 const config = vi.hoisted(() => ({ getEnums: vi.fn(), getStageConstraints: vi.fn(), getSystemParameters: vi.fn() }));
@@ -205,7 +206,7 @@ describe('Relation and BOM components', () => {
   });
 });
 
-async function mountEditor(query, cardValue = baseCard, permissionValues = []) {
+async function mountEditor(query, cardValue = baseCard, permissionValues = ['card_edit']) {
   taskApi.get.mockResolvedValue(structuredClone(cardValue));
   const pinia = createPinia(); setActivePinia(pinia);
   usePermissionStore().permissions = permissionValues;
@@ -226,7 +227,7 @@ describe('TaskCardEditorView modes and tabs', () => {
     config.getSystemParameters.mockResolvedValue([{ key: 'organizationName', value: 'HAECO Landing Gear Services' }]);
     review.list.mockResolvedValue([]); taskApi.listChangeRecords.mockResolvedValue([]); taskApi.listRelations.mockResolvedValue([]);
     bom.listLotLinks.mockResolvedValue([]); bom.listBases.mockResolvedValue([]); taskApi.checkDuplicate.mockResolvedValue({ duplicate: false });
-    classification.latest.mockResolvedValue(null);
+    classification.latest.mockResolvedValue(null); taskApi.listVersions.mockResolvedValue([]);
     classification.derive.mockResolvedValue({ status: 'derived', classification: 'Routine', candidates: [{ classification: 'Routine' }] });
   });
 
@@ -245,6 +246,12 @@ describe('TaskCardEditorView modes and tabs', () => {
     expect(viewWrapper.find('[data-testid="save-card"]').exists()).toBe(false);
     expect(viewWrapper.get('[data-testid="title"]').attributes('disabled')).toBeDefined();
     viewWrapper.unmount();
+  });
+
+  it('uses runtime card_edit for New-only authoring instead of route mode', async () => {
+    const wrapper = await mountEditor({ mode: 'edit', id: '7' }, baseCard, []);
+    expect(wrapper.vm.readonly).toBe(true); expect(wrapper.get('[data-testid="permission-readonly-notice"]').text()).toContain('card_edit');
+    expect(wrapper.find('[data-testid="save-card"]').exists()).toBe(false); wrapper.unmount();
   });
 
   it('surfaces duplicate revision 409 feedback', async () => {

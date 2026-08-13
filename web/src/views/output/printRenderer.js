@@ -65,13 +65,47 @@ function fallbackTemplate() {
   </section>`;
 }
 
+function safeImageUrl(value) {
+  const url = String(value ?? '').trim();
+  return /^(?:https?:\/\/|\/|\.\/|\.\.\/)/i.test(url) ? escapePrintValue(url) : '';
+}
+function annotationSvg(annotations) {
+  const shapes = (Array.isArray(annotations) ? annotations : []).map((item) => {
+    const points = (item.points || item.path || []).map((point) => Array.isArray(point) ? point : [point.x, point.y]);
+    const at = (index) => ({ x: Number(points[index]?.[0] || 0) * 100, y: Number(points[index]?.[1] || 0) * 100 });
+    const a = at(0); const b = at(points.length - 1); const color = escapePrintValue(item.color || '#f56c6c');
+    if (['rect', 'rectangle'].includes(item.type)) return `<rect x="${Math.min(a.x,b.x)}" y="${Math.min(a.y,b.y)}" width="${Math.abs(b.x-a.x)}" height="${Math.abs(b.y-a.y)}" fill="none" stroke="${color}"/>`;
+    if (item.type === 'arrow') return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${color}" marker-end="url(#print-arrow)"/>`;
+    if (item.type === 'text') return `<text x="${a.x}" y="${a.y}" fill="${color}" font-size="4">${escapePrintValue(item.text)}</text>`;
+    return `<polyline points="${points.map(([x,y]) => `${Number(x)*100},${Number(y)*100}`).join(' ')}" fill="none" stroke="${color}"/>`;
+  }).join('');
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none"><defs><marker id="print-arrow" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 z"/></marker></defs>${shapes}</svg>`;
+}
+function rowsTable(title, items, fields) {
+  const rows = items.flatMap((item) => Array.isArray(item.rows) ? item.rows : []);
+  if (!rows.length) return '';
+  return `<section><h4>${title}</h4><table><thead><tr>${fields.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${fields.map(([key]) => `<td>${escapePrintValue(row[key])}</td>`).join('')}</tr>`).join('')}</tbody></table></section>`;
+}
+function componentSupplement(model) {
+  const sections = (model.steps || []).map((step) => {
+    const tools = rowsTable('Tools / 工具', step.tools || [], [['partNo','Part No.'],['description','Description']]);
+    const consumables = rowsTable('Consumables / 耗材', step.consumables || [], [['partNo','Part No.'],['description','Description'],['qty','Qty'],['category','Category']]);
+    const sketches = (step.sketches || []).map((image) => {
+      const url = safeImageUrl(image.url); if (!url) return '';
+      return `<figure class="annotated-image"><img src="${url}" alt="${escapePrintValue(image.name || 'Process image')}"/>${annotationSvg(image.annotations)}</figure>`;
+    }).join('');
+    return tools || consumables || sketches ? `<section class="component-supplement"><h3>${escapePrintValue(step.processId)}</h3>${tools}${consumables}${sketches}</section>` : '';
+  }).join('');
+  return sections;
+}
+
 export function renderPrintTriple(triple) {
   if (!triple || typeof triple !== 'object' || !triple.model || typeof triple.model !== 'object') {
     throw new TypeError('打印接口须返回 {templateId, templateBody, model} 三元组');
   }
   const { cardType: _cardType, card_type: _cardTypeSnake, ...printModel } = triple.model;
   const template = safeTemplate(triple.templateBody) || fallbackTemplate();
-  return `<article class="print-sheet" data-template-id="${escapePrintValue(triple.templateId)}">${renderBlock(template, printModel, printModel)}</article>`;
+  return `<article class="print-sheet" data-template-id="${escapePrintValue(triple.templateId)}">${renderBlock(template, printModel, printModel)}${componentSupplement(printModel)}</article>`;
 }
 
 export function createPrintDocument(triples) {
@@ -81,6 +115,7 @@ export function createPrintDocument(triples) {
     @page{size:A4;margin:12mm}*{box-sizing:border-box}body{margin:0;color:#111;font:12px Arial,"Microsoft YaHei",sans-serif}
     .print-sheet{min-height:270mm;break-after:page}.print-sheet:last-child{break-after:auto}header{text-align:center}h1{font-size:18px}h2{font-size:15px}
     table{width:100%;border-collapse:collapse;margin:8px 0}th,td{border:1px solid #222;padding:5px;text-align:left}.steps>li{margin:10px 0}
+    .component-supplement{break-inside:avoid}.annotated-image{position:relative;display:inline-block;max-width:100%;margin:8px 0}.annotated-image img{display:block;max-width:100%;max-height:120mm}.annotated-image svg{position:absolute;inset:0;width:100%;height:100%}.annotated-image rect,.annotated-image line,.annotated-image polyline{stroke-width:1.5;vector-effect:non-scaling-stroke}
   </style></head><body>${sheets}</body></html>`;
 }
 

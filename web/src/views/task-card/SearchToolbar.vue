@@ -6,7 +6,7 @@ const STATUS_OPTIONS = Object.freeze([
   ['Superseded', '已被取代'], ['Void', '作废'],
 ]);
 const STAGE_OPTIONS = Object.freeze(['CUS', 'DMY', 'MOD', 'NRC', 'RTN', 'SPC', 'WCC', 'WFD']);
-const EMPTY_FILTERS = Object.freeze({ acType: '', taskNo: '', gearType: '', title: '', status: '', stage: '' });
+const EMPTY_FILTERS = Object.freeze({ acType: '', taskNo: '', gearType: '', title: '', status: '', stage: '', cmm: '', processSkills: [], processDescription: '' });
 
 const props = defineProps({
   modelValue: { type: Object, default: () => ({}) },
@@ -19,7 +19,9 @@ const form = reactive({ ...EMPTY_FILTERS, ...props.modelValue });
 watch(() => props.modelValue, (value) => Object.assign(form, EMPTY_FILTERS, value || {}), { deep: true });
 
 function cleanFilters() {
-  return Object.fromEntries(Object.entries(form).map(([key, value]) => [key, String(value ?? '').trim()]));
+  return Object.fromEntries(Object.entries(form).map(([key, value]) => [key,
+    Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : String(value ?? '').trim(),
+  ]));
 }
 function search() {
   const filters = cleanFilters();
@@ -50,6 +52,10 @@ defineExpose({ form, search, reset });
     <el-form-item label="Stage"><el-select v-model="form.stage" data-testid="filter-stage" clearable placeholder="全部 Stage">
       <el-option v-for="value in STAGE_OPTIONS" :key="value" :label="value === 'WFD' ? 'WFD（待删除）' : value" :value="value" />
     </el-select></el-form-item>
+    <el-form-item label="CMM"><el-input v-model="form.cmm" data-testid="filter-cmm" clearable /></el-form-item>
+    <el-form-item label="Process Skill"><el-select v-model="form.processSkills" multiple filterable allow-create default-first-option
+      data-testid="filter-process-skills" placeholder="可多选 / 输入后回车"><el-option v-for="value in form.processSkills" :key="value" :label="value" :value="value" /></el-select></el-form-item>
+    <el-form-item label="Process Description"><el-input v-model="form.processDescription" data-testid="filter-process-description" clearable /></el-form-item>
     <el-form-item class="search-actions">
       <el-button type="primary" :loading="loading" :disabled="disabled" data-testid="search-button" @click="search">查询</el-button>
       <el-button :disabled="disabled" data-testid="reset-button" @click="reset">重置</el-button>

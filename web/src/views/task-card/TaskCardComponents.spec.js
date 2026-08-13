@@ -192,3 +192,15 @@ describe('VoidDialog', () => {
     wrapper.unmount();
   });
 });
+
+describe('Section 29 advanced list controls', () => {
+  it('emits array-valued Process Skill and exposes all new optional columns', async () => {
+    const wrapper = mountWithElement(SearchToolbar, { props: { modelValue: {} } });
+    Object.assign(wrapper.vm.form, { cmm: 'CMM-32', processSkills: ['GR', 'QC'], processDescription: 'bearing' });
+    wrapper.vm.search();
+    expect(wrapper.emitted('search').at(-1)[0]).toMatchObject({ cmm: 'CMM-32', processSkills: ['GR', 'QC'], processDescription: 'bearing' });
+    const keys = cloneDefaultColumns().map(({ key }) => key);
+    expect(keys).toEqual(expect.arrayContaining(['revision', 'revisionDate', 'documentType', 'referenceNo', 'cmmRevision']));
+    wrapper.unmount();
+  });
+});

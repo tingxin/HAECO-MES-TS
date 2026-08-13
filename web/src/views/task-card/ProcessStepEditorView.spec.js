@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import ElementPlus from 'element-plus';
+import { createPinia, setActivePinia } from 'pinia';
+import { usePermissionStore } from '../../stores/permission.js';
 import ProcessStepEditorView from './ProcessStepEditorView.vue';
 import ComponentInserter from './ComponentInserter.vue';
 import CaptureItemEditor from './CaptureItemEditor.vue';
@@ -22,11 +24,12 @@ vi.mock('../../api/attachmentApi.js', () => ({ attachmentApi: { upload: mocks.at
 const TYPES = ['measurement','table','text','tool','image','video','audio','range','consumable','time','dataGroup','custom','signature'];
 const baseStep = { id: 11, processId: 'A', skill: 'GR', refDocId: 3, descriptionZh: '拆卸轴承', descriptionEn: 'Remove bearing', captureItems: [{ id: 21, type: 'text', itemKey: 'P/N', required: true, config: {} }], components: [{ id: 31, type: 'text', payload: { content: '保留内容' }, sortOrder: 1 }, { id: 32, type: 'image', payload: {}, sortOrder: 2 }], signatureRequirements: [], safetyWarning: '', visualCue: null, repairTips: '', isCritical: 0 };
 function card(status = 'New') { return { id: 7, status, referenceDocuments: [{ id: 3, refNo: 'AMM-32', documentRevision: 'R1' }], steps: [structuredClone(baseStep)] }; }
-async function mountView(status = 'New') {
+async function mountView(status = 'New', permissions = ['card_edit']) {
   mocks.taskGet.mockResolvedValueOnce(card(status));
+  const pinia = createPinia(); setActivePinia(pinia); usePermissionStore().permissions = permissions;
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/task-card/step', name: 'task-card-step', component: ProcessStepEditorView }, { path: '/task-card/editor', name: 'task-card-editor', component: { template: '<div />' } }] });
   await router.push({ name: 'task-card-step', query: { cardId: '7', stepId: '11', mode: status === 'New' ? 'edit' : 'view' } }); await router.isReady();
-  const wrapper = mount(ProcessStepEditorView, { global: { plugins: [router, ElementPlus], stubs: { transition: false } } }); await flushPromises(); return wrapper;
+  const wrapper = mount(ProcessStepEditorView, { global: { plugins: [pinia, router, ElementPlus], stubs: { transition: false } } }); await flushPromises(); return wrapper;
 }
 beforeEach(() => {
   vi.clearAllMocks(); mocks.getEnums.mockResolvedValue({ componentType: TYPES, signatureRole: ['Operator','QC','NDT','CertifyingStaff'], skill: ['GR','QC'] });
@@ -61,6 +64,11 @@ describe('Section 25 process step authoring', () => {
     wrapper.vm.changeReason = '配置多角色签署'; await wrapper.vm.save();
     expect(mocks.stepUpdate).toHaveBeenCalledWith('7', 11, expect.objectContaining({ signatureRequirements: [expect.objectContaining({ signatureRole: 'Operator', stampRequired: true, dateRequired: true, sortOrder: 1 }), expect.objectContaining({ signatureRole: 'QC', stampRequired: false, dateRequired: true, sortOrder: 2 })] }));
     expect(wrapper.vm.step.signatureRequirements.map((row) => row.signatureRole)).toEqual(['Operator','QC']); wrapper.unmount();
+  });
+  it('uses runtime card_edit and keeps a New card readonly without it', async () => {
+    const wrapper = await mountView('New', []);
+    expect(wrapper.vm.readonly).toBe(true); expect(wrapper.find('[data-testid="save-step"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="step-readonly-notice"]').text()).toContain('只读'); wrapper.unmount();
   });
   it('saves and applies a real reusable template to restore aggregate step content', async () => {
     const wrapper = await mountView(); wrapper.vm.templateName = '轴承拆卸模板'; wrapper.vm.changeReason = '保存模板';

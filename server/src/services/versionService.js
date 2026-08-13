@@ -91,6 +91,7 @@ import processStepRepo from '../repositories/processStepRepo.js';
 import captureItemRepo from '../repositories/captureItemRepo.js';
 import componentRepo from '../repositories/componentRepo.js';
 import signatureRequirementRepo from '../repositories/signatureRequirementRepo.js';
+import relationRepo from '../repositories/relationRepo.js';
 import changeRecordRepo from '../repositories/changeRecordRepo.js';
 import taskNoSequenceRepo from '../repositories/taskNoSequenceRepo.js';
 import rolePermissionRepo from '../repositories/rolePermissionRepo.js';
@@ -222,9 +223,10 @@ function assertTaskNoRevisionUnique(taskNo, revision, excludeId) {
 // =====================================================================
 
 /**
- * 将源工卡的全部子表内容（工序、其下数据采集项/插入组件/签署项配置、参考文件）
- * 逐字段克隆到新工卡（`newCardId`）。除各自的 `id` 与归属外键（`cardId`/`stepId`）外，
- * 全部字段原样搬迁——这正是需求 3.3、23.1「内容副本」在子表层面的落实：
+ * 将源工卡的全部编制域子表内容（工序、其下数据采集项/插入组件/签署项配置、参考文件、
+ * 关联记录）逐字段克隆到新工卡（`newCardId`）。除各自的 `id` 与归属外键
+ * （`cardId`/`stepId`）外，全部字段原样搬迁——这正是需求 3.3、23.1「内容副本」及
+ * 需求 51.2「完整编制域快照」在子表层面的落实：
  * `domain/card-rules.js` 的 `copyCard`/`reviseCard` 只处理 `task_card` 行本身，
  * 子表克隆职责在此。调用方须自行包一层事务。
  * @param {number | string} sourceCardId
@@ -233,6 +235,9 @@ function assertTaskNoRevisionUnique(taskNo, revision, excludeId) {
 function cloneCardChildren(sourceCardId, newCardId) {
   for (const doc of referenceDocRepo.listByCardId(sourceCardId)) {
     referenceDocRepo.create({ ...doc, id: undefined, cardId: newCardId });
+  }
+  for (const relation of relationRepo.listByCardId(sourceCardId)) {
+    relationRepo.create({ ...relation, id: undefined, cardId: newCardId });
   }
 
   for (const step of processStepRepo.listByCardId(sourceCardId)) {

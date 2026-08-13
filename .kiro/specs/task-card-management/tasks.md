@@ -2,7 +2,7 @@
 
 ## Overview
 
-本实施计划将 design.md 转化为增量、测试驱动的编码任务序列，覆盖 requirements.md 全部 **49 条需求**与 design.md 全部 **35 条正确性属性**。
+本实施计划将 design.md 转化为增量、测试驱动的编码任务序列，覆盖 requirements.md 全部 **54 条需求**与 design.md 全部 **40 条正确性属性**。
 
 `HAECO-MES-TS` 为**全新独立全栈项目**（当前仅含 `.kiro/` 与 `docs/`），因此计划自脚手架起步：server 包 → 数据库 schema/migrate/seed → 领域纯函数 → 仓储 → 服务 → 身份权限 → REST 路由 → web 包与三大界面。测试基座为 Vitest + fast-check + Supertest。
 
@@ -14,8 +14,8 @@
 
 | 类别 | 属性 | 被测对象 | 迭代次数 |
 |------|------|----------|----------|
-| 纯函数属性 | Property 1–12、14–24、26–30、32、33、**35** | `server/src/domain/*` 纯函数 | `numRuns: 100` |
-| 事务/持久化属性 | **Property 13（回滚部分）、25、31、34** | 服务层 + 内存 SQLite（每迭代重建 schema+seed） | `numRuns: 30` |
+| 纯函数属性 | Property 1–12、14–24、26–30、32、33、**35–40** | `server/src/domain/*` 纯函数 | `numRuns: 100` |
+| 事务/持久化属性 | **Property 13（回滚部分）、25、31、34、39（replace 回滚部分）** | 服务层 + 内存 SQLite（每迭代重建 schema+seed） | `numRuns: 30` |
 
 标签格式：`// Feature: task-card-management, Property {number}: {property_text}`
 
@@ -456,7 +456,7 @@
     - **Validates: Requirements 49.5, 49.6, 49.7, 37.5, 44.6**
     - 释放 → 升版并随机修改编制域工序内容（增删工序、改采集项、改组件、改签署项）→ 断言既有 JOB 的快照内容逐字段不变，且 JOB 呈现结果与模板当前内容无关
 
-- [x] 15. Checkpoint — 后端内核（Property 1–35 应全部通过）
+- [x] 15. Checkpoint — 后端内核（原基线 Property 1–35 已全部通过）
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 16. 实现身份上下文、权限中间件与 Express 装配
@@ -679,9 +679,9 @@
     - 断言：JOB 视图渲染快照内容而非模板当前内容、未确认安全警示时进入执行按钮禁用、打印模型不含工卡分类且签署栏与配置一致、编制态与 JOB 态打印投影差异正确、无 `config_write` 时配置维护视图只读
     - _Requirements: 5.2, 16.3, 31.6, 45.7, 46.14, 47.8, 49.6_
 
-- [x] 27. Final checkpoint — 全栈集成校验
-  - 对照 requirements.md **需求 1–49** 逐项走查，确认最小信息集 I.1–I.11 与工包对接 II 全部落位
-  - 确认 design.md **Property 1–35** 全部有对应测试且通过
+- [x] 27. Final checkpoint — 原 1–49 需求全栈集成校验
+  - 对照修订前 requirements.md **需求 1–49** 逐项走查，确认最小信息集 I.1–I.11 与工包对接 II 全部落位
+  - 确认原基线 design.md **Property 1–35** 全部有对应测试且通过
   - 逐项复核《临时设计说明》「仍待澄清」项与开发期待确认项 D-01–D-07（含 D-07 `exec_document` 结构随 SWS 编制归属裁定而定），确认全部实现为配置驱动、改配置即可调整
   - 四界面导航流（清单 → 编制 → 工序 → JOB 查看）+ 配置维护视图人工走查，视觉对照 `HAECO-Demo`
   - Ensure all tests pass, ask the user if questions arise.
@@ -696,13 +696,60 @@
   - [x] 28.7 强制人工确认携带最新 `derivationResultId`，缺失与陈旧结果分别拒绝
   - [x] 28.8 恢复并扩展 Property 23 与 Property 19(h) 覆盖，保持 `numRuns: 100`
 
+- [x] 29. 客户 Demo 对齐修订（Task Card Management，2026-08-13）
+  - [x] 29.1 完成 requirements、独立变更记录、design 与一致性审阅
+    - 吸收明确行为并记录不吸收项、视觉参考及保守裁决；范围仅限 LGS-TS-01-01
+    - _Requirements: 50.1–54.7_
+  - [x] 29.2 扩展高级筛选、可选列与批量打印契约
+    - 服务端支持 CMM、Process Skill 多选、Process Description 同工序 EXISTS；分页总数去重
+    - 前端增加筛选项和 Revision/Revision Date/Document Type/Reference No/CMM & Revision 可选列；批量打印逐卡分页
+    - _Requirements: 50.1–50.7_
+  - [x] 29.3 实现版本历史中心
+    - 版本摘要、完整聚合快照、与直接前版字段 Diff、逐版本审核记录和单版本历史打印
+    - 不提供 Restore 与 Print Compare
+    - _Requirements: 51.1–51.7_
+  - [x] 29.4 实现工序位置插入、深复制、重排序与删除保护
+    - 深复制全部子记录并复用附件二进制引用；插入/排序后按 A…Z/AA 重编号；最后一道工序不可删除
+    - 全部写入口保持 New-only、`card_edit` 与 `buildChangeRecords` 约束
+    - _Requirements: 52.1–52.6_
+  - [x] 29.5 实现工序 Excel append/replace 导入
+    - 第一列步骤、第二列 Inspection Item、保留单元格换行；replace 二次确认、原因必填、事务回滚
+    - _Requirements: 53.1–53.7_
+  - [x] 29.6 实现图片标注及工具/耗材结构化 payload
+    - 矩形/画笔/箭头/文字/颜色/重置；annotations 进入版本、预览、打印与 JOB 快照
+    - 工具和耗材各最多一表，支持行增删与整表删除，兼容旧 payload
+    - _Requirements: 54.1–54.7_
+  - [x]* 29.7 编写 Property 36：高级筛选的工序存在量词与分页一致性
+    - `numRuns: 100`
+    - _Requirements: 50.1, 50.2, 50.7_
+  - [x]* 29.8 编写 Property 37：版本快照与差异确定性
+    - `numRuns: 100`
+    - _Requirements: 51.1–51.5_
+  - [x]* 29.9 编写 Property 38：工序深复制、位置与重编号一致性
+    - `numRuns: 100`
+    - _Requirements: 52.1–52.6_
+  - [x]* 29.10 编写 Property 39：双模式导入原子性与换行保持
+    - 纯函数 `numRuns: 100`；replace 回滚服务层 `numRuns: 30`
+    - _Requirements: 53.1–53.7_
+  - [x]* 29.11 编写 Property 40：图片标注及工具/耗材 payload 往返
+    - `numRuns: 100`
+    - _Requirements: 54.1–54.7, 49.5–49.7_
+  - [x]* 29.12 补充后端路由与前端组件回归测试
+    - 覆盖版本历史页签、动态权限、最后工序保护、导入模式、图片标注和结构化表格
+    - _Requirements: 50.3–50.6, 51.1–51.5, 52.5–52.6, 53.5, 54.1–54.7_
+  - [x] 29.13 Final checkpoint — 需求 1–54 / Property 1–40 全量验证
+    - Server full tests（Windows 单 worker）、Web full tests、Web build、两端 audit、diagnostics、`git diff --check`
+    - 最终结果：Server 82 files / 859 tests；Web 8 files / 61 tests；Web production build 成功；两端 audit 0 vulnerabilities；diagnostics 与 `git diff --check` 均通过
+    - `tasks.md` 不得存在未完成 checkbox；不创建 Git commit
+
 ---
 
 ## Notes
 
 - 标 `*` 的子任务为可选测试任务，可为快速 MVP 跳过；核心实现任务不可跳过。
-- 每条正确性属性各占**一个独立子任务**，标注属性编号与其校验的需求条款，保证 35 条属性与 49 条需求双向可追溯。
-- 属性测试覆盖 design.md **Property 1–35**：纯函数属性（任务 5–10）`numRuns: 100`；事务/持久化属性 Property 13（回滚部分）、25、31、34（任务 14）`numRuns: 30`，被测对象为服务层 + 内存 SQLite。
+- 每条正确性属性各占**一个独立子任务**，标注属性编号与其校验的需求条款，保证 **40 条属性与 54 条需求**双向可追溯。
+- 属性测试覆盖 design.md **Property 1–40**：原基线纯函数属性（任务 5–10）及 Property 36–40 的纯函数部分均为 `numRuns: 100`；事务/持久化属性 Property 13（回滚部分）、25、31、34 及 Property 39 replace 回滚部分为 `numRuns: 30`，被测对象为服务层 + 内存 SQLite。
+- 2026-08-13 客户 Demo 对齐增量新增需求 50–54 与 Property 36–40，落地高级筛选/可选列/批量打印、版本历史、工序编排与原子导入、图片标注及结构化工具/耗材 payload；明确不吸收 Restore、Print Compare、冲突状态机与编号规则。
 - 本轮相对上一版任务表的增量：新增 `domain/change-record.js` 与 **Property 35**（任务 10.1、10.7）；新增 `domain/exec-doc.js` 与 `exec_document` 表（任务 3.2、6.4、13.4、20.5），Property 3 / 20 扩展为覆盖工卡与单据两类实体（任务 6.7、6.8）；新增三个集成只读契约端点与对应 mock 表（任务 3.5、12.4、20.4）；新增四组配置维护写端点与服务（任务 13.8、20.2、26.4）；`printProjection` 扩展为逐工序输出签署栏，Property 8 相应扩展（任务 5.3、5.9）；Property 29 扩展为覆盖全部只读带出字段（任务 8.4、8.8）。
 - Supertest 接口测试使用临时或内存 SQLite，测试前 `migrate` + `seed`，测试后清理。
 - Checkpoint 分布在数据层（任务 4）、领域层（任务 11）、后端内核（任务 15）、后端 API（任务 21）、全栈（任务 27）五处。

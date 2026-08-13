@@ -19,6 +19,13 @@ const revisionText = (value) => String(Number.isFinite(Number(value)) ? Number(v
 const valueOf = (row, key) => {
   if (key === 'isFai') return row.isFai === true || Number(row.isFai) === 1 ? '是' : '否';
   if (key === 'revision') return revisionText(row.revision);
+  if (key === 'revisionDate') return row.revisionDate ?? row.date ?? '-';
+  if (key === 'documentType') return row.documentType ?? row.docType ?? '-';
+  if (key === 'referenceNo') return row.referenceNo ?? row.refNo ?? '-';
+  if (key === 'cmmRevision') {
+    if (row.cmmRevision) return row.cmmRevision;
+    return [row.documentType === 'CMM' ? row.refNo : row.cmm, row.documentRevision ?? row.cmmDocumentRevision].filter(Boolean).join(' / ') || '-';
+  }
   return row[key] ?? '-';
 };
 defineExpose({ visibleColumns, revisionText });
@@ -43,7 +50,7 @@ defineExpose({ visibleColumns, revisionText });
           <el-button v-if="row.status === 'Effective'" link type="warning" :disabled="!canEdit" data-testid="effective-edit" @click="emit('revise', row)">升版后编辑</el-button>
           <el-button v-else link type="primary" :disabled="!canEdit || row.status !== 'New'" data-testid="row-edit" @click="emit('edit', row)">编辑</el-button>
           <el-button link type="primary" :disabled="!canEdit" data-testid="row-copy" @click="emit('copy', row)">复制</el-button>
-          <el-button link type="primary" :disabled="!canEdit" data-testid="row-revise" @click="emit('revise', row)">升版</el-button>
+          <el-button v-if="row.status === 'Effective'" link type="primary" :disabled="!canEdit" data-testid="row-revise" @click="emit('revise', row)">升版</el-button>
           <el-button link type="primary" :disabled="!canPrint" data-testid="row-print" @click="emit('print', row)">打印</el-button>
           <el-button link type="danger" :disabled="!canVoid || !['New', 'Effective'].includes(row.status)" data-testid="row-void" @click="emit('void', row)">作废</el-button>
         </template>

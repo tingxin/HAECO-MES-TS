@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 
-import { CODE, sendOk } from '../lib/response.js';
-import { ServiceError } from '../lib/service-error.js';
+import { sendOk } from '../lib/response.js';
 import authorize from '../middleware/authorize.js';
 import userContext from '../middleware/user-context.js';
 import processStepService from '../services/processStepService.js';
@@ -20,17 +19,9 @@ function route(handler) {
 
 function uploadWorkbook(req, res, next) {
   workbookUpload.single('file')(req, res, (error) => {
-    if (error) {
-      const message = error.code === 'LIMIT_FILE_SIZE' ? 'Excel 文件大小超限（上限 20MB）' : error.message;
-      return next(new ServiceError(CODE.VALIDATION, message));
-    }
+    if (error) return next(processStepService.workbookUploadError(error));
     return next();
   });
-}
-
-function requireFile(req) {
-  if (!req.file?.buffer) throw new ServiceError(CODE.VALIDATION, '请上传 file 字段');
-  return req.file;
 }
 
 function reason(req) {
@@ -42,6 +33,11 @@ export const createStep = route((req, res) =>
 
 export const saveStep = route((req, res) =>
   sendOk(res, processStepService.saveStep(req.params.id, req.params.stepId, req.body, req.user)));
+
+export const copyStep = route((req, res) =>
+  sendOk(res, processStepService.copyStep(
+    req.params.id, req.params.stepId, req.body, req.user,
+  )));
 
 export const deleteStep = route((req, res) =>
   sendOk(res, processStepService.deleteStep(
@@ -99,8 +95,11 @@ export const downloadTemplate = route(async (req, res) => {
 });
 
 export const importSteps = route(async (req, res) => {
-  const file = requireFile(req);
-  const result = await processStepService.importSteps(req.params.id, file.buffer, req.user);
+  const buffer = processStepService.requireWorkbookBuffer(req.file);
+  const result = await processStepService.importSteps(req.params.id, buffer, req.user, {
+    mode: req.body?.mode ?? req.query?.mode,
+    reason: reason(req),
+  });
   return sendOk(res, result);
 });
 
@@ -130,6 +129,7 @@ export function createProcessStepsRouter({
   router.post('/task-cards/:id/steps/import', ...allowed('card_edit', uploadWorkbook, importSteps));
   router.post('/task-cards/:id/steps/reorder', ...allowed('card_edit', reorderSteps));
   router.post('/task-cards/:id/steps', ...allowed('card_edit', createStep));
+  router.post('/task-cards/:id/steps/:stepId/copy', ...allowed('card_edit', copyStep));
   router.put('/task-cards/:id/steps/:stepId', ...allowed('card_edit', saveStep));
   router.delete('/task-cards/:id/steps/:stepId', ...allowed('card_edit', deleteStep));
   router.put('/task-cards/:id/steps/:stepId/safety', ...allowed('card_edit', updateSafety));

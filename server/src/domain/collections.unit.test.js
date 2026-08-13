@@ -129,7 +129,9 @@ describe('组件往返与 step_id 绑定（需求 13.1–13.3、18.1、18.2）',
       id: 11,
       stepId: 42,
       type: 'image',
-      payload: { attachmentId: 9, url: '/api/attachments/9', annotations: [{ x: 1, y: 2 }] },
+      payload: { attachmentId: 9, url: '/api/attachments/9', annotations: [
+        { type: 'rect', points: [[1, 2], [3, 4]], color: '#ff0000' },
+      ] },
       sortOrder: 3,
     };
     const row = serializeComponent(component);
@@ -141,6 +143,22 @@ describe('组件往返与 step_id 绑定（需求 13.1–13.3、18.1、18.2）',
     expect(back.type).toBe('image');
     expect(back.payload).toEqual(component.payload);
     expect(back.sortOrder).toBe(3);
+  });
+
+  it('兼容旧版 name/details 单行工具与耗材 payload 并归一化为 rows', () => {
+    const tool = parseComponent(serializeComponent({
+      stepId: 7, type: 'tool', payload: { name: 'T-OLD', details: 'Legacy tool' }, sortOrder: 1,
+    }));
+    expect(tool.payload).toEqual({ rows: [{ partNo: 'T-OLD', description: 'Legacy tool' }] });
+
+    const consumable = parseComponent(serializeComponent({
+      stepId: 7, type: 'consumable',
+      payload: { name: 'M-OLD', details: 'Legacy material', qty: 2, unit: 'tube' },
+      sortOrder: 2,
+    }));
+    expect(consumable.payload).toEqual({
+      rows: [{ partNo: 'M-OLD', description: 'Legacy material', qty: '2', category: 'tube' }],
+    });
   });
 
   it('二次往返稳定（幂等）', () => {

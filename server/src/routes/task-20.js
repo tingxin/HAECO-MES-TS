@@ -191,6 +191,10 @@ export function createTask20Router({
     });
     return res.send(buffer);
   })));
+  router.post('/task-cards/print', ...allowed('card_print_export', route((req, res) => sendOk(
+    res,
+    printService.getBatchPrintModels(req.body?.ids),
+  ))));
   router.get('/task-cards/:id/print', ...allowed('card_print_export', route((req, res) => sendOk(
     res,
     printService.getPrintModel(req.params.id, { jobNo: req.query.jobNo }),

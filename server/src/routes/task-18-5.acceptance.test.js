@@ -229,7 +229,10 @@ describe('Task 18.5 process-step acceptance', () => {
       components: [{ type: 'text', payload: { html: '<b>must survive</b>' } }],
     });
     const before = await auth('get', `/api/task-cards/${cardId}`, token).expect(200);
-    const expectedRemainingSteps = before.body.data.steps.filter((step) => step.id !== victim.id);
+    const expectedRemainingSteps = before.body.data.steps
+      .filter((step) => step.id !== victim.id)
+      .map((step, index) => ({ ...step, seq: index + 1,
+        processId: String.fromCharCode('A'.charCodeAt(0) + index) }));
     expect(expectedRemainingSteps.some((step) => step.id === survivor.id)).toBe(true);
 
     const reason = 'Task 18.5 remove obsolete step';

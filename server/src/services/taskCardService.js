@@ -69,7 +69,12 @@ import { passesEditableGate, statusOf, INITIAL_REVISION, checkDuplicate } from '
 import { buildChangeRecords } from '../domain/change-record.js';
 import { isValidEnumValue } from '../domain/enums.js';
 import { validateStageCardType } from '../domain/stage-constraint.js';
-import { isValidComponentType, normalizeReferenceDocument } from '../domain/collections.js';
+import {
+  isValidComponentType,
+  normalizeComponentPayload,
+  normalizeReferenceDocument,
+  PayloadError,
+} from '../domain/collections.js';
 import { isWritableField } from '../domain/permission.js';
 import { generateProcessId } from '../domain/process-id.js';
 
@@ -265,6 +270,53 @@ function assertChangeRecordOk(diff) {
   }
 }
 
+function componentWriteOrThrow(stepId, component, excludedId = null) {
+  const type = component?.type;
+  if (type !== undefined && type !== null && !isValidComponentType(type)) {
+    throw new ServiceError(CODE.VALIDATION, `组件类型非法：${String(type)}`);
+  }
+  if (type === 'tool' || type === 'consumable') {
+    const duplicate = componentRepo.listByStepId(stepId).some((entry) =>
+      entry.type === type && String(entry.id) !== String(excludedId));
+    if (duplicate) {
+      throw new ServiceError(CODE.VALIDATION, `每道工序最多只能有一个${type === 'tool' ? '工具' : '耗材'}表`);
+    }
+  }
+  try {
+    return {
+      ...component,
+      ...(type === undefined ? {} : { payload: normalizeComponentPayload(type, component?.payload) }),
+    };
+  } catch (error) {
+    if (error instanceof PayloadError) throw new ServiceError(CODE.VALIDATION, error.message);
+    throw error;
+  }
+}
+
+function buildRenumberPlan(card, orderedSteps, reason, operatorId) {
+  const records = [];
+  const updates = orderedSteps.map((before, index) => {
+    const after = { ...before, seq: index + 1, processId: generateProcessId(card, index + 1) };
+    const diff = buildChangeRecords(before, after, 'edit', reason, operatorId, {
+      cardId: card.id,
+      cardRevision: card.revision,
+    });
+    assertChangeRecordOk(diff);
+    records.push(...diff.records);
+    return { id: before.id, seq: after.seq, processId: after.processId };
+  });
+  return { updates, records };
+}
+
+function applyRenumberPlan(cardId, plan) {
+  for (const { id } of plan.updates) {
+    processStepRepo.update(id, { processId: `TMP_${cardId}_${id}` });
+  }
+  for (const update of plan.updates) {
+    processStepRepo.update(update.id, { seq: update.seq, processId: update.processId });
+  }
+}
+
 // =====================================================================
 // 二、工卡元数据：创建 / 保存
 // =====================================================================
@@ -404,7 +456,19 @@ export function getCard(id) {
 
 /** List task cards using the repository's AND-combined filters and pagination semantics. */
 export function listCards(options = {}) {
-  return taskCardRepo.list(options);
+  const parsePositive = (value, fallback, label) => {
+    if (value === undefined || value === '') return fallback;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new ServiceError(CODE.VALIDATION, `${label} 必须为正整数`);
+    }
+    return parsed;
+  };
+  return taskCardRepo.list({
+    ...options,
+    page: parsePositive(options.page, 1, 'page'),
+    pageSize: parsePositive(options.pageSize, 20, 'pageSize'),
+  });
 }
 
 /** Return the complete authoring aggregate, optionally enriched with immutable JOB execution data. */
@@ -563,10 +627,10 @@ export function removeReferenceDocument(cardId, docId, ctx, reason) {
  * @param {{operatorId?: string}} ctx
  * @returns {object} 新增的工序（camelCase）
  */
-export function addProcessStep(cardId, input, ctx) {
+export function addProcessStep(cardId, input, ctx, reason) {
   const card = loadCardOrThrow(cardId);
   assertEditable(card, 'stepCreate');
-  operatorIdOf(ctx);
+  const operatorId = operatorIdOf(ctx);
 
   const filtered = filterToKnownColumns(input, PROCESS_STEP_COLUMNS);
   const writable = stripReadonlyFields('process_step', filtered);
@@ -584,7 +648,16 @@ export function addProcessStep(cardId, input, ctx) {
 
   return withTransaction(() => {
     const id = processStepRepo.create({ ...writable, cardId, seq, processId });
-    return processStepRepo.findById(id);
+    const created = processStepRepo.findById(id);
+    if (reason !== undefined) {
+      const diff = buildChangeRecords(null, created, 'edit', reason, operatorId, {
+        cardId: card.id,
+        cardRevision: card.revision,
+      });
+      assertChangeRecordOk(diff);
+      if (diff.records.length > 0) changeRecordRepo.createMany(diff.records);
+    }
+    return created;
   });
 }
 
@@ -640,32 +713,42 @@ export function removeProcessStep(stepId, ctx, reason) {
   const { step: before, card } = loadStepAndCard(stepId);
   assertEditable(card, 'stepDelete');
   const operatorId = operatorIdOf(ctx);
+  const existing = processStepRepo.listByCardId(card.id);
+  if (existing.length <= 1) {
+    throw new ServiceError(CODE.UNPROCESSABLE, '工卡至少须保留一道工序', {
+      rejection: 'LAST_PROCESS_STEP',
+    });
+  }
 
-  const diff = buildChangeRecords(before, null, 'delete', reason, operatorId, {
+  const deletion = buildChangeRecords(before, null, 'delete', reason, operatorId, {
     cardId: card.id,
     cardRevision: card.revision,
   });
-  assertChangeRecordOk(diff);
+  assertChangeRecordOk(deletion);
+  const renumber = buildRenumberPlan(
+    card,
+    existing.filter((step) => String(step.id) !== String(stepId)),
+    reason,
+    operatorId,
+  );
 
   return withTransaction(() => {
+    for (const { id } of renumber.updates) {
+      processStepRepo.update(id, { processId: `TMP_${card.id}_${id}` });
+    }
     processStepRepo.remove(stepId);
-    if (diff.records.length > 0) changeRecordRepo.createMany(diff.records);
-    return { removed: true, id: stepId };
+    for (const update of renumber.updates) {
+      processStepRepo.update(update.id, { seq: update.seq, processId: update.processId });
+    }
+    const records = [...deletion.records, ...renumber.records];
+    if (records.length > 0) changeRecordRepo.createMany(records);
+    return { removed: true, id: stepId, steps: processStepRepo.listByCardId(card.id) };
   });
 }
 
 /**
- * 工序排序（需求 10.1）：按 `orderedStepIds` 给出的顺序重排 `seq`（1 起始），
- * `processId` **不随排序改变**（工序编号是工序的持久身份，需求 11.1 的编号规则只在
- * 新增时按 seq 生成一次；排序不是重新生成编号）。经编辑态闸门；经 `buildChangeRecords`
- * 对每道 `seq` 实际变化的工序写 `edit` 类型留痕。
- *
- * @param {number | string} cardId
- * @param {ReadonlyArray<number | string>} orderedStepIds 该工卡全部工序 id，按新顺序排列
- * @param {{operatorId?: string}} ctx
- * @param {string} reason 变更原因（必填）
- * @returns {object[]} 重排后的工序集合（camelCase，按新 `seq` 升序）
- * @throws {ServiceError} `orderedStepIds` 与工卡现有工序集合不一致（400）
+ * 工序排序：验证提交的是当前工卡全部工序的无重复精确集合，并在单事务内通过临时
+ * Process ID 避免唯一键碰撞，最终同时重建连续 seq 与 A…Z/AA Process ID。
  */
 export function reorderProcessSteps(cardId, orderedStepIds, ctx, reason) {
   const card = loadCardOrThrow(cardId);
@@ -675,32 +758,18 @@ export function reorderProcessSteps(cardId, orderedStepIds, ctx, reason) {
   const existing = processStepRepo.listByCardId(cardId);
   const existingIds = new Set(existing.map((step) => String(step.id)));
   const orderedIds = Array.isArray(orderedStepIds) ? orderedStepIds.map(String) : [];
-  const sameSet =
-    orderedIds.length === existing.length && orderedIds.every((id) => existingIds.has(id));
+  const sameSet = orderedIds.length === existing.length
+    && new Set(orderedIds).size === existing.length
+    && orderedIds.every((id) => existingIds.has(id));
   if (!sameSet) {
     throw new ServiceError(CODE.VALIDATION, '排序列表须恰好包含该工卡现有的全部工序，不多不少');
   }
 
   const byId = new Map(existing.map((step) => [String(step.id), step]));
-  const allDiffs = [];
-  const updates = [];
-  orderedIds.forEach((id, index) => {
-    const before = byId.get(id);
-    const newSeq = index + 1;
-    if (before.seq === newSeq) return;
-    const after = { ...before, seq: newSeq };
-    const diff = buildChangeRecords(before, after, 'edit', reason, operatorId, {
-      cardId: card.id,
-      cardRevision: card.revision,
-    });
-    assertChangeRecordOk(diff);
-    allDiffs.push(...diff.records);
-    updates.push({ id, seq: newSeq });
-  });
-
+  const plan = buildRenumberPlan(card, orderedIds.map((id) => byId.get(id)), reason, operatorId);
   return withTransaction(() => {
-    for (const { id, seq } of updates) processStepRepo.update(id, { seq });
-    if (allDiffs.length > 0) changeRecordRepo.createMany(allDiffs);
+    applyRenumberPlan(cardId, plan);
+    if (plan.records.length > 0) changeRecordRepo.createMany(plan.records);
     return processStepRepo.listByCardId(cardId);
   });
 }
@@ -808,14 +877,16 @@ export function addComponent(stepId, component, ctx) {
   const { card } = loadStepAndCard(stepId);
   assertEditable(card, 'componentWrite');
   operatorIdOf(ctx);
-
-  if (component?.type !== undefined && !isValidComponentType(component.type)) {
-    throw new ServiceError(CODE.VALIDATION, `组件类型非法：${String(component.type)}`);
-  }
+  const writable = componentWriteOrThrow(stepId, component);
 
   return withTransaction(() => {
-    const id = componentRepo.create({ ...component, stepId });
-    return componentRepo.findById(id);
+    try {
+      const id = componentRepo.create({ ...writable, stepId });
+      return componentRepo.findById(id);
+    } catch (error) {
+      if (error instanceof PayloadError) throw new ServiceError(CODE.VALIDATION, error.message);
+      throw error;
+    }
   });
 }
 
@@ -833,12 +904,7 @@ export function updateComponent(componentId, patch, ctx, reason) {
   const { card } = loadStepAndCard(before.stepId);
   assertEditable(card, 'componentWrite');
   const operatorId = operatorIdOf(ctx);
-
-  if (patch?.type !== undefined && !isValidComponentType(patch.type)) {
-    throw new ServiceError(CODE.VALIDATION, `组件类型非法：${String(patch.type)}`);
-  }
-
-  const after = { ...before, ...patch };
+  const after = componentWriteOrThrow(before.stepId, { ...before, ...patch }, componentId);
   const diff = buildChangeRecords(before, after, 'edit', reason, operatorId, {
     cardId: card.id,
     cardRevision: card.revision,
@@ -846,9 +912,14 @@ export function updateComponent(componentId, patch, ctx, reason) {
   assertChangeRecordOk(diff);
 
   return withTransaction(() => {
-    componentRepo.update(componentId, after);
-    if (diff.records.length > 0) changeRecordRepo.createMany(diff.records);
-    return componentRepo.findById(componentId);
+    try {
+      componentRepo.update(componentId, after);
+      if (diff.records.length > 0) changeRecordRepo.createMany(diff.records);
+      return componentRepo.findById(componentId);
+    } catch (error) {
+      if (error instanceof PayloadError) throw new ServiceError(CODE.VALIDATION, error.message);
+      throw error;
+    }
   });
 }
 

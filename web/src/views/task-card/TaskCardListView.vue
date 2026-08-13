@@ -24,7 +24,7 @@ const permissions = computed(() => ({
   void: permissionStore.hasPermission('card_void'), output: permissionStore.hasPermission('card_print_export'),
   replace: permissionStore.hasPermission('batch_replace'), migration: permissionStore.hasPermission('migration_run'),
 }));
-const filters = reactive({ acType: '', taskNo: '', gearType: '', title: '', status: '', stage: '', ...taskCardStore.filters });
+const filters = reactive({ acType: '', taskNo: '', gearType: '', title: '', status: '', stage: '', cmm: '', processSkills: [], processDescription: '', ...taskCardStore.filters });
 const rows = ref([]); const total = ref(0); const page = ref(1); const pageSize = ref(20); const loading = ref(false);
 const selectedRows = ref([]); const columns = ref(loadColumns());
 const dialogs = reactive({ columns: false, copy: false, replace: false, void: false, sws: false, migration: false });
@@ -36,7 +36,8 @@ function normalizeFilters(value) { Object.assign(filters, value || {}); taskCard
 async function search(value = filters) {
   normalizeFilters(value); loading.value = true;
   try {
-    const activeFilters = Object.fromEntries(Object.entries(filters).filter(([, value]) => String(value ?? '').trim() !== ''));
+    const activeFilters = Object.fromEntries(Object.entries(filters).filter(([, value]) => Array.isArray(value) ? value.length : String(value ?? '').trim() !== '')
+      .map(([key, value]) => [key, Array.isArray(value) ? value.join(',') : value]));
     const response = await taskCardApi.list({ ...activeFilters, page: page.value, pageSize: pageSize.value });
     rows.value = response.list || []; total.value = response.total || 0;
     page.value = response.page || page.value; pageSize.value = response.pageSize || pageSize.value;
@@ -94,7 +95,7 @@ function printCards(card) {
   selectCard(card);
   requireSelection(async () => {
     try {
-      const models = await Promise.all(selectedIds.value.map((id) => taskCardApi.getPrintModel(id)));
+      const models = await taskCardApi.getBatchPrintModels(selectedIds.value);
       printTriples(models);
       ElMessage.success(`已渲染 ${models.length} 张工卡并发送至浏览器打印`);
     } catch (error) { ElMessage.error(error.message || '打印失败'); }

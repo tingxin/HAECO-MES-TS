@@ -14,8 +14,10 @@ import BomBaseTable from './BomBaseTable.vue';
 import ReviewPanel from './ReviewPanel.vue';
 import ClassificationConfirmDialog from './ClassificationConfirmDialog.vue';
 import ProcessStepList from './ProcessStepList.vue';
+import VersionHistoryPanel from './VersionHistoryPanel.vue';
+import { usePermissionStore } from '../../stores/permission.js';
 
-const route = useRoute(); const router = useRouter();
+const route = useRoute(); const router = useRouter(); const permissionStore = usePermissionStore();
 const mode = computed(() => ['add', 'edit', 'view', 'revise'].includes(String(route.query.mode)) ? String(route.query.mode) : 'add');
 const sourceId = computed(() => route.query.id); const jobNo = computed(() => route.query.jobNo);
 const activeTab = ref('metadata'); const loading = ref(false); const saving = ref(false);
@@ -23,11 +25,12 @@ const card = reactive({ status: 'New', revision: 1, date: new Date().toISOString
 const enums = ref({}); const stageConfig = ref({}); const organizationName = ref('');
 const pendingReferences = ref([]); const bomBases = ref([]); const changeReason = ref('');
 const classificationOpen = ref(false); const classificationResult = ref(null); const duplicateMessage = ref('');
-const readonly = computed(() => mode.value === 'view' || card.status !== 'New');
+const canEdit = computed(() => permissionStore.hasPermission('card_edit'));
+const readonly = computed(() => mode.value === 'view' || card.status !== 'New' || !canEdit.value);
 const pendingRevision = computed(() => mode.value === 'revise' && String(card.id ?? '') === String(sourceId.value ?? ''));
 const authoringReadonly = computed(() => readonly.value || pendingRevision.value);
 const classificationPending = computed(() => classificationResult.value?.status === 'requires_confirmation');
-const showReviseNotice = computed(() => card.status === 'Effective' || (readonly.value && mode.value !== 'view'));
+const showReviseNotice = computed(() => mode.value !== 'view' && card.status !== 'New');
 const title = computed(() => ({ add: '新增工卡', edit: '编辑工卡', view: '查看工卡', revise: '工卡升版' }[mode.value]));
 const references = computed(() => card.id ? (card.referenceDocuments || []) : pendingReferences.value);
 const steps = computed(() => card.steps || []);
@@ -126,6 +129,7 @@ defineExpose({ card, mode, readonly, activeTab, changeReason, duplicateMessage, 
     <el-card shadow="never">
       <template #header><div class="page-heading"><div><h1>{{ title }}</h1><p>Task Card Editor · {{ mode }}</p></div><el-tag :type="card.status === 'New' ? 'success' : 'info'">{{ card.status }}</el-tag></div></template>
       <el-alert v-if="showReviseNotice" title="当前版本只读，变更请先执行升版" type="warning" :closable="false" show-icon data-testid="revise-notice" />
+      <el-alert v-else-if="!canEdit" title="当前身份无 card_edit 权限，编制内容只读" type="warning" :closable="false" show-icon data-testid="permission-readonly-notice" />
       <el-alert v-if="duplicateMessage" :title="duplicateMessage" type="error" :closable="false" data-testid="revision-duplicate" />
       <div class="editor-actions"><el-button @click="router.push({ name: 'task-card-list' })">返回</el-button>
         <el-button type="primary" :disabled="readonly || pendingRevision || !card.id" data-testid="open-classification" @click="classificationOpen = true">商务分类</el-button>
@@ -138,6 +142,7 @@ defineExpose({ card, mode, readonly, activeTab, changeReason, duplicateMessage, 
         <el-tab-pane label="关联工卡" name="relations"><el-alert v-if="!card.id" title="请先保存工卡后维护关联" type="info" :closable="false" /><CardRelationPanel v-else :card-id="card.id" :rows="card.relations || []" :readonly="authoringReadonly" />
           <template v-if="card.cardType === '05'"><el-divider content-position="left">Lot List 关联</el-divider><LotLinkPanel v-if="card.id" :card-id="card.id" :readonly="authoringReadonly" @update="refreshBom" /><el-divider content-position="left">BOM Base（IR 卡 + Lot List 两来源）</el-divider><BomBaseTable :rows="bomBases" /></template></el-tab-pane>
         <el-tab-pane label="审核记录" name="review"><el-alert v-if="pendingRevision" title="请先保存新版本，再提交审核" type="info" :closable="false" /><ReviewPanel v-else-if="card.id" :card-id="card.id" :status="card.status" :revision="card.revision" :card-type="card.cardType || ''" :classification-pending="classificationPending" :commercial-classification="card.commercialClassification || ''" @status-change="onStatusChange" @classification-required="onClassificationRequired" @released="onReleased" /><el-empty v-else description="保存后可查看审核记录" /></el-tab-pane>
+        <el-tab-pane label="版本历史" name="history"><VersionHistoryPanel v-if="card.id" :card-id="card.id" /><el-empty v-else description="保存后可查看版本历史" /></el-tab-pane>
       </el-tabs>
     </el-card>
     <ClassificationConfirmDialog v-model="classificationOpen" :card-id="card.id" :card-type="card.cardType || ''" :classification-result="classificationResult" @derived="onClassificationDerived" @confirmed="onClassificationConfirmed" />

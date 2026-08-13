@@ -7,6 +7,7 @@ import { taskCardApi } from '../../api/taskCardApi.js';
 import BarcodeView from './BarcodeView.vue';
 import SafetyAckDialog from './SafetyAckDialog.vue';
 import ElectronicSignaturePanel from './ElectronicSignaturePanel.vue';
+import ProcessComponentPreview from '../task-card/ProcessComponentPreview.vue';
 import { printTriples } from '../output/printRenderer.js';
 
 const route = useRoute();
@@ -81,7 +82,7 @@ defineExpose({ job, processes, acknowledged, safetyProcess, load, canStart, star
         <h3>{{ display(contentOf(process).descriptionZh) }}</h3><p>{{ display(contentOf(process).descriptionEn) }}</p>
         <el-alert v-if="contentOf(process).safetyWarning" :title="typeof contentOf(process).safetyWarning === 'string' ? contentOf(process).safetyWarning : (contentOf(process).safetyWarning.content || contentOf(process).safetyWarning.text)" type="warning" :closable="false" show-icon />
         <dl><template v-for="key in ['skill', 'refDoc', 'repairTips', 'operation']" :key="key"><dt>{{ key }}</dt><dd>{{ display(typeof contentOf(process)[key] === 'object' ? JSON.stringify(contentOf(process)[key]) : contentOf(process)[key]) }}</dd></template></dl>
-        <div v-if="contentOf(process).components?.length" class="components"><b>插入组件</b><pre>{{ JSON.stringify(contentOf(process).components, null, 2) }}</pre></div>
+        <div v-if="contentOf(process).components?.length" class="components"><b>插入组件</b><ProcessComponentPreview v-for="(component,index) in contentOf(process).components" :key="component.id || index" :component="component" /></div>
       </article>
       <el-descriptions :column="4" border class="process-times" data-testid="process-times">
         <el-descriptions-item label="开始时间">{{ display(process.startTime) }}</el-descriptions-item><el-descriptions-item label="结束时间">{{ display(process.finishTime) }}</el-descriptions-item>
@@ -101,5 +102,5 @@ defineExpose({ job, processes, acknowledged, safetyProcess, load, canStart, star
 </template>
 
 <style scoped>
-.job-viewer{min-width:980px}.heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.heading>div:last-child{display:flex;align-items:center;gap:10px}h1,h2{margin:0;color:#12395b}h1{font-size:22px}h2{font-size:17px}.heading p{margin:4px 0 0;color:#909399}.process-card,.el-descriptions{margin-top:16px}.snapshot{padding:4px 0}.snapshot h3{margin:8px 0;color:#303133}.snapshot p{white-space:pre-wrap;line-height:1.6}.snapshot dl{display:grid;grid-template-columns:110px 1fr;margin:12px 0}.snapshot dt,.snapshot dd{margin:0;padding:6px;border-bottom:1px solid #ebeef5}.snapshot dt{font-weight:600;color:#606266}.components pre{max-height:180px;overflow:auto;background:#f5f7fa;padding:8px}.actions{display:flex;align-items:center;gap:8px;margin-top:12px}.gate-message{color:#e6a23c;font-size:13px}
+.job-viewer{min-width:980px}.heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.heading>div:last-child{display:flex;align-items:center;gap:10px}h1,h2{margin:0;color:#12395b}h1{font-size:22px}h2{font-size:17px}.heading p{margin:4px 0 0;color:#909399}.process-card,.el-descriptions{margin-top:16px}.snapshot{padding:4px 0}.snapshot h3{margin:8px 0;color:#303133}.snapshot p{white-space:pre-wrap;line-height:1.6}.snapshot dl{display:grid;grid-template-columns:110px 1fr;margin:12px 0}.snapshot dt,.snapshot dd{margin:0;padding:6px;border-bottom:1px solid #ebeef5}.snapshot dt{font-weight:600;color:#606266}.components{margin-top:12px}.actions{display:flex;align-items:center;gap:8px;margin-top:12px}.gate-message{color:#e6a23c;font-size:13px}
 </style>

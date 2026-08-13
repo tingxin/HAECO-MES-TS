@@ -6,6 +6,7 @@ const step = (id, stepId) => `${card(id)}/steps/${segment(stepId)}`;
 
 export const stepApi = {
   create: (cardId, data) => http.post(`${card(cardId)}/steps`, data),
+  copy: (cardId, stepId, data) => http.post(`${step(cardId, stepId)}/copy`, data),
   update: (cardId, stepId, data) => http.put(step(cardId, stepId), data),
   remove: (cardId, stepId, data) => http.delete(step(cardId, stepId), { data }),
   reorder: (cardId, data) => http.post(`${card(cardId)}/steps/reorder`, data),
@@ -17,5 +18,7 @@ export const stepApi = {
   createTemplate: (data) => http.post('/step-templates', data),
   applyTemplate: (cardId, stepId, data) => http.post(`${step(cardId, stepId)}/apply-template`, data),
   downloadImportTemplate: (cardId) => http.get(`${card(cardId)}/steps/template-file`, { responseType: 'blob' }),
-  importSteps: (cardId, file) => http.post(`${card(cardId)}/steps/import`, uploadForm(file)),
+  importSteps: (cardId, file, options = {}) => http.post(`${card(cardId)}/steps/import`, uploadForm(file, {
+    mode: options.mode || 'append', ...(options.reason ? { reason: options.reason } : {}),
+  })),
 };

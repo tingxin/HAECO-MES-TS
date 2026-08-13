@@ -2,13 +2,48 @@
 
 ## Overview
 
-本设计文档描述 HAECO LGS MES 工程模块中**工卡管理（Task Card Management，流程编号 LGS-TS-01-01）** 在全新独立项目 `HAECO-MES-TS` 中的实现方案，覆盖 requirements.md 全部 **49 条需求**。
+本设计文档描述 HAECO LGS MES 工程模块中**工卡管理（Task Card Management，流程编号 LGS-TS-01-01）** 在全新独立项目 `HAECO-MES-TS` 中的实现方案，覆盖 requirements.md 全部 **54 条需求**。
 
 三大界面：
 
 1. **工卡清单界面（Task Card List）** — 工卡统一查询、筛选、批量操作与状态管理入口。
-2. **工卡编制界面（Task Card Editor）** — 工卡结构化元数据编制与管理主界面，满足工作指令最小信息集（I.1–I.11）。
-3. **工序信息编辑界面（Process Step Editor）** — 工卡执行步骤的可视化编辑与数据采集配置界面，支持 13 类功能组件插入。
+2. **工卡编制界面（Task Card Editor）** — 工卡结构化元数据编制与管理主界面，满足工作指令最小信息集（I.1–I.11），并提供版本历史中心。
+3. **工序信息编辑界面（Process Step Editor）** — 工卡执行步骤的可视化编辑与数据采集配置界面，支持 13 类功能组件、图片标注和结构化工具/耗材表。
+
+### 2026-08-13 客户 Demo 对齐增量
+
+`HAECO-Demo` 从“仅 UI 外观参考”提升为 **LGS-TS-01-01 后期业务细节参考**，但优先级低于蓝图、requirements.md 与 2026-08-10 已裁定规则。详细吸收/排除矩阵见 `docs/客户Demo对齐变更记录-TaskCardManagement-20260813.md`。本增量保持五态、整数版次、A…Z/AA 工序号、一编一审、New-only 编辑、JOB 快照隔离和权限点来源不变。
+
+#### API 增量
+
+| 方法与路径 | 契约 | 需求 |
+|---|---|---|
+| `GET /api/task-cards` | 新增 `cmm`、`processSkills`、`processDescription`；工序条件由同一 `EXISTS` 子查询命中，总数先于分页计算 | 50.1, 50.2, 50.7 |
+| `GET /api/task-cards/:id/versions` | 返回版本摘要并附逐版本审核记录 | 51.1, 51.4 |
+| `GET /api/task-cards/:id/versions/:versionId/snapshot` | 聚合指定版本抬头、参考文件、工序及全部子记录，只读返回 | 51.2 |
+| `GET /api/task-cards/:id/versions/:versionId/diff` | 与直接前一 Revision 做确定性字段 Diff；首版返回 `[]` | 51.3 |
+| `GET /api/task-cards/:versionId/print` | 既有打印端点直接以历史版本 id 构建模型，历史中心复用 | 51.5 |
+| `POST /api/task-cards/:id/steps` | 可选 `afterStepId`；空值追加，否则插入指定工序之后并重编号 | 52.1, 52.4 |
+| `POST /api/task-cards/:id/steps/:stepId/copy` | 深复制工序及子记录，附件二进制引用复用，插入源工序之后 | 52.2, 52.3 |
+| `DELETE /api/task-cards/:id/steps/:stepId` | 删除最后一道工序返回 422 | 52.5 |
+| `POST /api/task-cards/:id/steps/import` | multipart 增加 `mode=append|replace` 与 `reason`；replace 原子替换且失败回滚 | 53 |
+
+#### 领域与持久化设计
+
+- `matchesFilters(card, filters)` 扩展 CMM 与 `steps` 聚合判定；仓储 SQL 使用 `reference_document` 与 `process_step` 的 `EXISTS`，避免 JOIN 造成重复工卡和错误 `total`。
+- 历史版本无需新增快照表：每个 Revision 本身是不可就地修改的独立 `task_card` 行，`versionSnapshot` 在读取时聚合该行及其子表；`diffVersionSnapshots` 仅比较两个聚合快照，不修改任何版本。
+- `cloneProcessStepAggregate` 是工序深复制的纯函数；服务层在一个事务内创建新工序及采集项、组件、签署项。附件仍由组件 payload 的 `attachmentId` 引用，复制时不复制物理文件。
+- 排序与插入统一通过 `renumberProcessSteps` 生成连续 `seq` 和 A…Z/AA `processId`；更新在单事务内完成并受唯一约束保护。
+- replace 导入先完整解析和校验到内存，再开启事务删除旧工序并写入新工序；解析失败时不进入写事务。第一列写 `descriptionZh`，第二列生成 `{type:'text', itemKey:'INSPECTION_ITEM', label:'Inspection Item', config:{value}, required:false}`。
+- 图片 payload 标准为 `{attachmentId,url,name,annotations:[]}`；annotation 采用 `{id,type:'rect|pen|arrow|text',points,color,text?}`。原图只存附件引用，annotations 随组件序列化、版本聚合与 JOB 快照复制。
+- 工具 payload 标准为 `{rows:[{partNo,description}]}`；耗材为 `{rows:[{partNo,description,qty,category}]}`。`normalizeStructuredPayload` 兼容旧 `toolPn/toolDesc/qty` 与 `materialNo/desc/qty/unit` 形态。
+
+#### 前端增量
+
+- `SearchToolbar` 增加 CMM、Process Skill 多选和 Process Description；`ColumnSettingsDialog` 增加五个可选列。
+- `VersionHistoryPanel` 位于工卡编辑页独立页签，提供版本摘要、快照、Diff、审核记录和单版本打印，不提供 Restore/Print Compare。
+- `ProcessStepList` 提供在后方新增、复制、拖拽/移动、删除和导入模式；所有写按钮同时受 `readonly` 与 `/api/me/permissions` 控制。
+- `ImageAnnotationEditor` 编辑结构化 annotation 并叠加预览；`ProcessComponentEditor` 对工具/耗材呈现行表编辑器并限制各一张。
 
 ### 技术定位与设计原则
 
@@ -107,7 +142,7 @@ HAECO-MES-TS/
 - **JOB 执行域** — 执行界面、多 SHEET 整合展示、执行附页等具体功能依蓝图归属生产蓝图。本模块声明 JOB No 生成触发点与承载关系（需求 37），并定义由编制域配置所决定的执行期契约：条码（需求 15）、起止时间（需求 33）、安全警示门禁（需求 31）、电子签章与归档（需求 32）、工序内容快照（需求 49.5–49.7）。此清单为本模块与生产蓝图的接口边界，生产蓝图不就同一行为重复定义。
 - **集成系统**在当前阶段一律以**本地表 + mock 端点**表示，后续替换为真实对接。覆盖范围：TPC 数据库、工包系统（发布结果 + 在编工包引用查询）、PPC 数据（工作分类与预计工时）、**PPC 排产（JOB TARGET DATE 来源，需求 26.4）**、**Process Data（PART No/S/N/DES./Operation Type 与工序 Operation 来源，需求 27.2、30.1）**、**Lot List（LT 单据的 Base Number 集合来源，需求 48.3）**、能力清单，以及商务分类派生的四个外部判定源（计划端 Dummy Job 设置、NRC 发起单据、外包清单、工包划分分类）与零件性质（LLP）。上述判定源与数据源本属其它模块，本模块仅定义**读取契约**，不建业务主表（见 §1.9）。
 
-### 本轮修订（与 requirements.md 49 条需求对齐）
+### 前序基线修订（原 requirements.md 49 条需求）
 
 本次修订不改变既有架构判断，仅补齐七处「需求有 SHALL、设计无落位对象」的缺口，并按属性反思原则合并而非新增冗余属性：
 
@@ -1115,6 +1150,38 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 
 **Validates: Requirements 19.1, 19.2, 19.3, 20.8, 42.5**
 
+### Property 36: 高级筛选的工序存在量词与分页一致性
+
+*For any* 工卡集合与 CMM、Process Skill 多选、Process Description 条件，返回工卡当且仅当全部卡头条件成立，且存在同一道工序同时满足全部非空工序条件；同一工卡无论有多少命中工序只出现一次，`total` 恒等于分页前去重后的命中工卡数。
+
+**Validates: Requirements 50.1, 50.2, 50.7**
+
+### Property 37: 版本快照与差异确定性
+
+*For any* 同一 Task No 的版本序列，读取任一版本所得快照恒只由该版本行及其子记录决定；重复读取逐字段相等。选中版本与直接前一版本的 Diff 恰包含发生变化的字段/集合项且不包含未变化项；首版 Diff 为空。后续版本写入不得改变既有版本快照。
+
+**Validates: Requirements 51.1, 51.2, 51.3, 51.4, 51.5**
+
+### Property 38: 工序深复制、位置与重编号一致性
+
+*For any* 工序聚合对象，复制结果除所有数据库标识、`processId` 与 `seq` 外与源内容深度等价，且修改副本的嵌套 payload 不改变源对象；副本紧随源工序。*For any* 插入、复制或重排序列，最终 `seq` 连续且 `processId` 恰为 A…Z、AA…，两两唯一；任何使工序数变为零的删除被拒绝。
+
+**Validates: Requirements 52.1, 52.2, 52.3, 52.4, 52.5, 52.6**
+
+### Property 39: 双模式导入原子性与换行保持
+
+*For any* 有效 Excel 行集合，append 后结果等于原集合连接导入集合，replace 后结果等于导入集合；步骤文本中的换行逐字符保持。*For any* 空集合、非法行或 replace 缺少原因的请求，导入被拒绝且原工序及全部子记录逐字段不变。
+
+**被测层次**：混合——解析、映射和 append/replace 集合语义由纯函数属性测试；replace 回滚由内存 SQLite + 服务层属性化集成测试。
+
+**Validates: Requirements 53.1, 53.2, 53.3, 53.4, 53.5, 53.6, 53.7**
+
+### Property 40: 图片标注及工具/耗材 payload 往返
+
+*For any* 合法 annotations、工具行和耗材行，序列化再解析/归一化后与原结构等价；旧版单行 payload 归一化后信息不丢失；每道工序的工具和耗材组件计数各不超过一。复制、版本快照与 JOB 快照均保留 annotations 和结构化行，且执行域修改不回写编制域。
+
+**Validates: Requirements 54.1, 54.2, 54.3, 54.4, 54.5, 54.6, 54.7, 49.5, 49.6, 49.7**
+
 ## Error Handling
 
 后端统一 `{ code, message, data }`；前端 axios 拦截器捕获并以 `ElMessage` 提示。错误码约定：`400` 校验失败、`403` 越权、`404` 未找到、`409` 重复冲突、`422` 状态/前置条件非法、`500` 服务器异常。
@@ -1173,14 +1240,14 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 ### 属性测试（Property-Based Testing）
 
 - 为 `TaskCard`、`ProcessStep`、`CaptureItem`、`InsertedComponent`、`SignatureRequirement`、`CardRelation`、筛选条件、能力清单、约束配置、迁移记录等构造 `fast-check` 生成器（arbitraries），覆盖枚举内/外值、空/满筛选、重复/唯一编号、五状态全组合、Stage×类型合法/非法组合、横切取值等边界。
-- 针对设计文档 **Property 1–35** 各编写**一个**属性测试，按被测层次分两类实现：
+- 针对设计文档 **Property 1–40** 各编写**一个**属性测试，按被测层次分两类实现：
 
 | 类别 | 属性 | 被测对象 | 断言方式 |
 |------|------|----------|----------|
-| **纯函数属性** | 1–12、14–24、26–30、32、33、35 | `server/src/domain/*` 纯函数 | `fast-check` 直接对函数输入输出断言 |
-| **事务/持久化属性** | **13、25、31、34** | 服务层 + 内存 SQLite（`:memory:`，每次迭代重建 schema 与 seed） | 属性化集成测试：随机生成操作序列，在每步后校验不变式 |
+| **纯函数属性** | 1–12、14–24、26–30、32、33、35–38、40，以及 39 的解析部分 | `server/src/domain/*` 纯函数 | `fast-check` 直接对函数输入输出断言 |
+| **事务/持久化属性** | **13、25、31、34、39（replace 回滚）** | 服务层 + 内存 SQLite（`:memory:`，每次迭代重建 schema 与 seed） | 属性化集成测试：随机生成操作序列，在每步后校验不变式 |
 
-  事务/持久化属性无法以纯函数表达，原因分别是：P13 断言整批回滚（无部分生效）、P25 断言**逐语句**中间态单一生效不变式（纯函数看不到语句边界）、P31 断言写 JOB 不改 `task_card` 行、P34 断言改模板不改既有 JOB 快照。
+  事务/持久化属性无法以纯函数表达，原因分别是：P13 断言整批回滚（无部分生效）、P25 断言**逐语句**中间态单一生效不变式（纯函数看不到语句边界）、P31 断言写 JOB 不改 `task_card` 行、P34 断言改模板不改既有 JOB 快照、P39 断言覆盖导入任一失败时旧工序集合完整回滚。
   注：Property 11（条码在 `(JOB No, Process ID)` 上唯一、跨 JOB 不复用）**属纯函数属性**——`generateBarcode(jobNo, processId)` 无 I/O，「不同 jobNo 产出不同条码」可直接以 fast-check 生成两组 jobNo 断言，不需集成测试。
 
 - 每个属性测试最少运行 **100 次迭代**（`fc.assert(..., { numRuns: 100 })`）；事务类属性可降至 30 次以控制耗时。
@@ -1207,8 +1274,8 @@ const STAGE_CROSSCUT = ["DMY","NRC","WCC","WFD"];
 
 ### 手工验收
 
-- 对照 requirements.md **需求 1–49** 逐项走查，确认最小信息集 I.1–I.11 与工包对接 II 全部落位。
-- 四界面导航流（清单 → 编制 → 工序 → JOB 查看）人工走查，视觉对照 `HAECO-Demo`。
+- 对照 requirements.md **需求 1–54** 逐项走查，确认最小信息集 I.1–I.11、工包对接 II 与客户 Demo 已吸收细节全部落位。
+- 五界面导航流（清单 → 编制 → 版本历史 → 工序 → JOB 查看）人工走查；仅以 `HAECO-Demo` 对照视觉和已裁决交互，不采用其冲突业务规则。
 - 对照《临时设计说明》逐项确认 Hotfix 假定处均按配置实现、可通过改配置调整。
 
 ### 不适用 PBT 的部分

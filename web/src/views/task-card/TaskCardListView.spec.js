@@ -8,7 +8,7 @@ import { usePermissionStore } from '../../stores/permission.js';
 
 const api = vi.hoisted(() => ({
   list: vi.fn(), copy: vi.fn(), adjustCopiedTaskNo: vi.fn(), revise: vi.fn(), batchReplace: vi.fn(), voidCard: vi.fn(),
-  getVoidPrecheck: vi.fn(), exportCsv: vi.fn(), getPrintModel: vi.fn(),
+  getVoidPrecheck: vi.fn(), exportCsv: vi.fn(), getPrintModel: vi.fn(), getBatchPrintModels: vi.fn(),
 }));
 vi.mock('../../api/taskCardApi.js', () => ({ taskCardApi: api }));
 vi.mock('../../api/execDocApi.js', () => ({ execDocApi: { list: vi.fn().mockResolvedValue({ list: [] }), copy: vi.fn() } }));
@@ -49,6 +49,7 @@ describe('TaskCardListView actions and permissions', () => {
     expect(api.revise).not.toHaveBeenCalled();
     expect(api.exportCsv).not.toHaveBeenCalled();
     expect(api.getPrintModel).not.toHaveBeenCalled();
+    expect(api.getBatchPrintModels).not.toHaveBeenCalled();
     expect(api.voidCard).not.toHaveBeenCalled();
     expect(api.getVoidPrecheck).not.toHaveBeenCalled();
     expect(api.batchReplace).not.toHaveBeenCalled();
@@ -62,8 +63,9 @@ describe('TaskCardListView actions and permissions', () => {
     await flushPromises();
 
     expect(api.list).toHaveBeenLastCalledWith({ ...requested, page: 1, pageSize: 20 });
-    expect({ ...wrapper.vm.filters }).toEqual(requested);
-    expect(wrapper.getComponent({ name: 'SearchToolbar' }).props('modelValue')).toEqual(requested);
+    expect({ ...wrapper.vm.filters }).toMatchObject(requested);
+    expect(wrapper.vm.filters).toMatchObject({ processSkills: [], cmm: '', processDescription: '' });
+    expect(wrapper.getComponent({ name: 'SearchToolbar' }).props('modelValue')).toMatchObject(requested);
     expect(wrapper.get('[data-testid="task-card-empty"]').text()).toContain('当前筛选条件已保留');
     wrapper.unmount();
   });
@@ -92,5 +94,31 @@ describe('TaskCardListView actions and permissions', () => {
     }
     expect(api.list).not.toHaveBeenCalled();
     wrapper.unmount();
+  });
+});
+
+describe('TaskCardListView Section 29 filters and batch print', () => {
+  beforeEach(() => {
+    vi.clearAllMocks(); api.list.mockResolvedValue({ list: [], total: 0, page: 1, pageSize: 20 });
+    vi.spyOn(ElMessage, 'warning').mockImplementation(() => {}); vi.spyOn(ElMessage, 'error').mockImplementation(() => {});
+  });
+  it('serializes Process Skill as the server processSkills comma contract and preserves all advanced filters', async () => {
+    const wrapper = await mountView(allPermissions);
+    await wrapper.vm.search({ cmm: '32-10 R2', processSkills: ['GR', 'QC'], processDescription: 'bearing' });
+    expect(api.list).toHaveBeenLastCalledWith({ cmm: '32-10 R2', processSkills: 'GR,QC', processDescription: 'bearing', page: 1, pageSize: 20 });
+    expect(wrapper.vm.filters.processSkills).toEqual(['GR', 'QC']); wrapper.unmount();
+  });
+  it('uses one backend batch-print request and leaves one browser sheet per selected card', async () => {
+    api.getBatchPrintModels.mockResolvedValue([
+      { templateId: 1, templateBody: '{{taskNo}}', model: { taskNo: 'TC-1', steps: [] } },
+      { templateId: 2, templateBody: '{{taskNo}}', model: { taskNo: 'TC-2', steps: [] } },
+    ]);
+    const popup = { document: { open: vi.fn(), write: vi.fn(), close: vi.fn() }, focus: vi.fn(), print: vi.fn() };
+    vi.stubGlobal('open', vi.fn(() => popup));
+    const wrapper = await mountView(allPermissions); wrapper.vm.onSelectionChange([{ id: 1 }, { id: 2 }]);
+    await wrapper.vm.printCards();
+    expect(api.getBatchPrintModels).toHaveBeenCalledWith([1, 2]);
+    expect(popup.document.write.mock.calls[0][0].match(/class="print-sheet"/g)).toHaveLength(2);
+    vi.unstubAllGlobals(); wrapper.unmount();
   });
 });

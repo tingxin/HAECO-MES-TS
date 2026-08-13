@@ -49,7 +49,7 @@ function fixture() {
       { id: 52, step_id: 999, type: 'text', item_key: 'ORPHAN', config: null },
     ],
     components: [
-      { id: 61, step_id: 11, type: 'tool', payload: '{"qty":1,"toolPn":"T-1"}', sort_order: 1 },
+      { id: 61, step_id: 11, type: 'tool', payload: '{"qty":1,"toolDesc":"Torque wrench","toolPn":"T-1"}', sort_order: 1 },
       { id: 62, step_id: 10, type: 'image', payload: '{"attachmentId":8}', sort_order: 1 },
     ],
     sigReqs: [
@@ -151,7 +151,7 @@ describe('buildStepSnapshots — 与来源解耦（Property 34 的前提，需�
   });
 
   it('入参为内存对象时载荷不与来源共享引用', () => {
-    const payload = { qty: 1, toolPn: 'T-1' };
+    const payload = { toolPn: 'T-1', toolDesc: 'Torque wrench' };
     const visualCue = { attachmentId: 7 };
     const [snapshot] = buildStepSnapshots(
       [{ id: 10, processId: 'A', seq: 1, visualCue }],
@@ -162,7 +162,9 @@ describe('buildStepSnapshots — 与来源解耦（Property 34 的前提，需�
     );
     payload.qty = 99;
     visualCue.attachmentId = 99;
-    expect(snapshot.content.components[0].payload).toEqual({ qty: 1, toolPn: 'T-1' });
+    expect(snapshot.content.components[0].payload).toEqual({
+      rows: [{ partNo: 'T-1', description: 'Torque wrench' }],
+    });
     expect(snapshot.content.visualCue).toEqual({ attachmentId: 7 });
   });
 

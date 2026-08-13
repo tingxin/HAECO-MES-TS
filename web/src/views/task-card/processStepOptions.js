@@ -12,8 +12,8 @@ export function componentLabel(type) {
 export function newComponent(type, sortOrder = 1) {
   const payloads = {
     measurement: { label: '', unit: '' }, table: { columns: [], rows: [] },
-    text: { content: '' }, tool: { name: '', details: '' }, image: {}, video: {}, audio: {},
-    range: { min: null, max: null, unit: '' }, consumable: { name: '', details: '' },
+    text: { content: '' }, tool: { rows: [] }, image: { annotations: [] }, video: {}, audio: {},
+    range: { min: null, max: null, unit: '' }, consumable: { rows: [] },
     time: { label: '', format: 'HH:mm' }, dataGroup: { name: '' },
     custom: { label: '', options: [] }, signature: { label: 'Staff Signature / Stamp / Date' },
   };

@@ -99,7 +99,9 @@ describe('task 18.1 process-step endpoints', () => {
       .expect(200);
     const replacement = await addStep(token, cardId, { descriptionZh: '删除后新增工序' });
     expect(replacement.processId).toBeTruthy();
-    expect(replacement.processId).not.toBe(second.processId);
+    const afterDelete = await auth('get', `/api/task-cards/${cardId}`, token).expect(200);
+    expect(afterDelete.body.data.steps.map((step) => step.processId))
+      .toEqual(afterDelete.body.data.steps.map((_step, index) => String.fromCharCode(65 + index)));
     const records = await auth('get', `/api/task-cards/${cardId}/change-records`, token).expect(200);
     expect(records.body.data.some((entry) => entry.changeType === 'delete')).toBe(true);
   });
@@ -187,21 +189,24 @@ describe('task 18.3 step-template and workbook endpoints', () => {
     await auth('get', '/api/task-cards/999999/steps/template-file', token).expect(404);
 
     const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.json_to_sheet([
-      { skill: 'GR', description_zh: 'Excel 导入工序', components: JSON.stringify([
-        { type: 'custom', payload: { schema: { result: 'string' } } },
-      ]) },
-      { skill: 'INVALID', description_zh: '应失败工序' },
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['Step', 'Inspection Item'],
+      ['Excel 导入工序\n第二行', '检查值\n保持换行'],
     ]);
     XLSX.utils.book_append_sheet(workbook, sheet, 'Process Steps');
     const file = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     const imported = await auth('post', `/api/task-cards/${cardId}/steps/import`, token)
       .attach('file', file, { filename: 'steps.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       .expect(200);
-    expect(imported.body.data).toMatchObject({ successCount: 1, failureCount: 1, totalCount: 2 });
+    expect(imported.body.data).toMatchObject({
+      mode: 'append', successCount: 1, failureCount: 0, totalCount: 1,
+    });
 
     const detail = await auth('get', `/api/task-cards/${cardId}`, token).expect(200);
-    const importedStep = detail.body.data.steps.find((step) => step.descriptionZh === 'Excel 导入工序');
-    expect(importedStep.components[0].payload).toEqual({ schema: { result: 'string' } });
+    const importedStep = detail.body.data.steps.find((step) => step.descriptionZh === 'Excel 导入工序\n第二行');
+    expect(importedStep.captureItems[0]).toMatchObject({
+      itemKey: 'INSPECTION_ITEM',
+      config: { value: '检查值\n保持换行' },
+    });
   });
 });

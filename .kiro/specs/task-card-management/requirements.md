@@ -6,7 +6,9 @@
 
 本模块需满足用户需求中"工作指令最小信息集（I.1–I.11）"及"对接工包系统（II）"要求，实现工卡的标准化、无纸化与可追溯性。系统在商务端创建服务订单（SO）后自动生成 PID，TS 部门在该 PID 下依据工包清单数据库与 ISO 要求选用例行工卡（Routine Card）与特殊工卡（Special Card）。
 
-本需求文档聚焦于工卡管理三大界面（工卡清单界面、工卡编制界面、工序信息编辑界面）及其配套的分类、版本、权限、集成能力。
+本需求文档聚焦于工卡管理三大界面（工卡清单界面、工卡编制界面、工序信息编辑界面）及其配套的分类、版本、权限、集成能力，共 **54 条需求**。
+
+**客户 Demo 补充依据与裁决原则（2026-08-13）**：`HAECO-Demo/views/lgs/work/task-card` 作为 LGS-TS-01-01 后期业务细节与交互参考，明确补充高级筛选、可选列、版本历史中心、工序复制/插入/排序、双模式导入、图片标注及工具/耗材结构。若 Demo 与本需求既有正式规则冲突，以本需求为准：保持五态生命周期、类型 01–11、整数版次（UI 补零）、A…Z/AA 工序编号、一编一审、仅 New 可编辑、条码仅在 JOB 释放后生成、执行仅依赖 JOB 快照。Demo 的浏览器 mock、CDN、HTML `.xls`、编制态 JOB 字段和 View 模式执行字段不构成正式技术或业务契约。详细裁决与映射见 `docs/客户Demo对齐变更记录-TaskCardManagement-20260813.md`。
 
 **模块边界声明**（对齐蓝图 2.3.4「工程部门核心操作功能（3项）」）：
 
@@ -690,3 +692,72 @@
 6. THE Task_Card_System SHALL 使 JOB 的执行与呈现仅依赖需求 49.5 所建立的快照，SHALL NOT 依赖编制域工序记录的当前内容。
 7. WHEN 编制域工序内容在后续版本中被修改, THE Task_Card_System SHALL 保持既有 JOB 的快照内容不变（对应需求 37.5 的两域分离与需求 44.6 的记录完整性要求）。
 8. THE Task_Card_System SHALL 允许对状态为"生效(Effective)"的工卡执行不改变其编制域内容的操作，包含查看、打印、导出、复制、升版、作废与发布至工包。
+
+### 需求 50：高级筛选、清单可选列与批量打印
+
+**User Story:** 作为具备工卡读取权限的用户，我希望按工卡抬头和工序内容组合检索并自行选择清单列，以便快速定位和批量输出目标工卡。
+
+#### 验收标准 (Acceptance Criteria)
+
+1. THE Task_Card_List SHALL 在需求 1 的筛选项之外提供 CMM、Process Skill（多选）与 Process Description 筛选；CMM 按工卡或参考文件的 CMM 编号/版本模糊匹配。
+2. WHEN Process Skill 与 Process Description 同时填写, THE Task_Card_System SHALL 仅在同一道工序同时满足全部已填写工序条件时返回所属工卡；Process Skill 多选值在该维度内为 OR，所有筛选维度之间仍为 AND。
+3. THE Task_Card_List SHALL 将 Revision、Revision Date、Document Type、Reference No、CMM & Revision 纳入可选列，并复用需求 2.3–2.4 的列顺序、可见性与固定方式持久化配置。
+4. WHEN 用户执行批量打印但未选择工卡, THE Task_Card_List SHALL 阻止操作并提示先选择工卡。
+5. WHEN 用户批量打印一张或多张工卡, THE Task_Card_System SHALL 使用各工卡对应的正式打印模型，并在浏览器打印输出中逐卡分页，使用户可选择打印机或保存为 PDF。
+6. THE Task_Card_List SHALL 依据 `/api/me/permissions` 返回的权限点与工卡正式五态动态显示或禁用行级操作；SHALL NOT 按角色名称或 `card_edit` 推导其它权限。
+7. THE Task_Card_System SHALL 对高级筛选后的结果先计算符合条件的总数再分页，返回的 `total` SHALL 表示全部命中工卡数而非当前页记录数。
+
+### 需求 51：版本历史中心
+
+**User Story:** 作为 TS工程师或 TS经理，我希望集中查看每个正式版本的完整内容、差异、审批记录并打印历史版本，以便追溯工卡演变过程。
+
+#### 验收标准 (Acceptance Criteria)
+
+1. THE Task_Card_Editor SHALL 提供版本历史页签，按 Revision 倒序展示同一 Task No 的版本号、修订日期、正式五态、变更原因与编制人。
+2. WHEN 用户查看某一历史版本, THE Task_Card_System SHALL 返回该版本的完整编制域快照，包含抬头、参考文件、工序、采集项、组件、签署项、安全警示和关联记录；该快照只读。
+3. WHEN 用户查看版本差异, THE Task_Card_System SHALL 将选中版本与其直接前一版本进行字段级比较，并至少返回抬头字段变化、参考文件变化、工序增删及工序内容变化；首版返回空差异集合。
+4. THE 版本历史中心 SHALL 按版本展示独立审核记录，包含审核动作、审核人、审核意见与审核时间。
+5. WHEN 用户打印某一历史版本, THE Task_Card_System SHALL 以该历史版本自身的完整内容生成正式打印模型，不得读取当前版本内容替代。
+6. THE Task_Card_System SHALL NOT 提供覆盖历史版本的恢复操作；若后续允许基于历史版本恢复，必须创建新的 New 版本并重新审核，且须另行澄清编号与变更原因规则。
+7. 双版本并排 Print Compare 不属于本轮正式范围；单版本历史打印 SHALL 可用，且不得被该待澄清项阻塞。
+
+### 需求 52：工序复制、位置插入、排序与删除保护
+
+**User Story:** 作为 TS工程师，我希望在任意工序后新增或复制完整工序、调整顺序并避免误删最后一道工序，以便高效且安全地编排作业步骤。
+
+#### 验收标准 (Acceptance Criteria)
+
+1. WHEN TS_Engineer 指定某道工序后新增工序, THE Task_Card_System SHALL 将新工序插入该位置之后；未指定位置时追加到末尾。
+2. WHEN TS_Engineer 复制工序, THE Task_Card_System SHALL 在源工序之后创建深复制，复制 Skill、参考文件、双语描述、采集项、组件、签署项、安全警示、视觉提示与维修技巧，并为新工序及其子记录生成新标识。
+3. WHERE 被复制组件引用附件二进制, THE Task_Card_System SHALL 复制组件 payload 与标注数据并复用不可变附件记录，不重复复制二进制文件；删除任一组件不得删除仍被其它组件引用的附件。
+4. WHEN TS_Engineer 通过拖拽或移动操作提交新顺序, THE Task_Card_System SHALL 在单一事务内保存顺序，并按 A…Z、AA… 规则重新生成全部 Process ID。
+5. IF 删除操作将使工卡剩余零道工序, THEN THE Task_Card_System SHALL 拒绝删除并提示至少保留一道工序。
+6. THE 上述新增、复制、排序与删除操作 SHALL 仅在工卡状态为 New 且用户具有 `card_edit` 权限时可用，并经 `buildChangeRecords` 留痕。
+
+### 需求 53：工序 Excel 导入模式
+
+**User Story:** 作为 TS工程师，我希望选择追加或覆盖模式导入简化 Excel 工序表，以便快速录入并明确控制对既有工序的影响。
+
+#### 验收标准 (Acceptance Criteria)
+
+1. THE Process_Step_Editor SHALL 支持上传 Excel 文件并选择 `append`（追加）或 `replace`（覆盖）模式；默认模式为 `append`。
+2. THE 导入器 SHALL 将工作表第一列映射为工序步骤内容（写入中文描述），第二列映射为 Inspection Item 数据采集项；空行 SHALL 被忽略。
+3. THE 导入器 SHALL 保留单元格内换行，不得在解析或保存时折叠为单行。
+4. WHEN 模式为 `append`, THE Task_Card_System SHALL 保留现有工序并在末尾追加成功解析的工序。
+5. WHEN 模式为 `replace`, THE 前端 SHALL 要求用户二次确认且提交非空变更原因；后端 SHALL 在单一事务内以导入结果替换全部现有工序，任一记录失败时整体回滚。
+6. IF 导入文件没有有效工序, THEN THE Task_Card_System SHALL 拒绝导入且保持原工序集合不变。
+7. THE 导入操作 SHALL 仅在 New 状态和 `card_edit` 权限下可用；导入完成后返回模式、成功条数、失败条数与逐行结果。
+
+### 需求 54：图片标注与工具/耗材结构化 payload
+
+**User Story:** 作为 TS工程师，我希望标注工序图片并以结构化表格维护工具与耗材，以便标注和备料信息可随版本、JOB 快照、预览和打印稳定呈现。
+
+#### 验收标准 (Acceptance Criteria)
+
+1. THE Process_Step_Editor SHALL 为图片组件提供矩形、自由画笔、箭头和文字标注工具，并允许选择颜色、撤销当前未保存修改及重置为原图。
+2. WHEN 用户保存图片标注, THE Task_Card_System SHALL 在图片组件 payload 中保留原附件引用与结构化 `annotations`，每条标注至少包含类型、坐标/路径、颜色及文字（适用时）；SHALL NOT 将 Base64 原图写入数据库。
+3. THE 图片标注 SHALL 随工卡版本内容保存，并包含于需求 49.5 的 JOB 工序快照；工卡只读预览、历史版本查看、JOB 呈现与打印 SHALL 使用对应版本/快照中的标注结果。
+4. THE 工具组件 payload SHALL 采用 `{rows:[{partNo,description}]}`；THE 耗材组件 payload SHALL 采用 `{rows:[{partNo,description,qty,category}]}`。
+5. THE Process_Step_Editor SHALL 限制每道工序最多一个工具表和一个耗材表，并支持添加行、删除行及删除整表。
+6. THE Task_Card_System SHALL 对旧版单行工具/耗材 payload 进行兼容归一化后展示与保存，避免既有数据丢失。
+7. THE 工具/耗材表及图片标注结果 SHALL 进入正式打印模型与 JOB 快照；执行期不得回写或修改编制域 payload。

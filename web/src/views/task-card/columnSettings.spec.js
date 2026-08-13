@@ -31,3 +31,13 @@ describe('task-card column settings persistence', () => {
     expect(loadColumns(brokenStorage)).toEqual(cloneDefaultColumns());
   });
 });
+
+it('migrates the old complete column layout and appends new Section 29 columns without losing preferences', () => {
+  localStorage.clear();
+  const old = cloneDefaultColumns().filter(({ key }) => !['revisionDate', 'documentType', 'referenceNo', 'cmmRevision'].includes(key));
+  old.find(({ key }) => key === 'title').visible = false;
+  localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(old.map(({ key, visible, fixed }) => ({ key, visible, fixed }))));
+  const migrated = loadColumns();
+  expect(migrated.find(({ key }) => key === 'title').visible).toBe(false);
+  expect(migrated.slice(-4).map(({ key }) => key)).toEqual(['revisionDate', 'documentType', 'referenceNo', 'cmmRevision']);
+});
